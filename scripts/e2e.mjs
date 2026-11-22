@@ -135,7 +135,7 @@ try {
   // Video export
   const t0 = Date.now();
   await page.getByRole('button', { name: /Video \(MP4\)/ }).click();
-  await page.locator('video').waitFor({ timeout: 2400000 }); // software WebGL in CI is slow; real devices take 1–3 min
+  await page.locator('video').waitFor({ timeout: 3600000 }); // software WebGL in CI is slow; real devices take 1–3 min
   log(`video export took ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   await page.screenshot({ path: `${OUT}/07-studio-exported.png`, fullPage: true });
   dl = page.waitForEvent('download');
