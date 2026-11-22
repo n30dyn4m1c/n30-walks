@@ -31,8 +31,15 @@ export interface FlyoverPlan {
   cum: number[];
   total: number;
   bearings: number[];
+  /**
+   * Smoothed ground elevation (m) under each resampled coord, or null if the
+   * track has no elevation. We drive the camera's centre altitude from this
+   * instead of letting MapLibre sample whatever terrain tile happens to be
+   * loaded — that sampling flips between zoom levels and makes the camera jump.
+   */
+  centerEle: number[] | null;
   followZoom: number;
-  overview: { center: LngLat; zoom: number; bearing: number };
+  overview: { center: LngLat; zoom: number; bearing: number; ele: number | null };
   /** Source track series for live stats, indexed by track distance */
   track: { cum: number[]; movingS: number[]; ele: (number | null)[]; pace: number[]; clockMs: number[] };
   /** Elevation profile sampled evenly over distance (for the overlay chart) */
@@ -46,6 +53,8 @@ export interface CameraState {
   bearing: number;
   /** Fraction of the screen height to push the focus point down (via padding) */
   focusOffset: number;
+  /** Ground elevation (m, unexaggerated) at the camera centre, or null to let MapLibre clamp */
+  elevation: number | null;
   /** Distance along the route reached so far (m) */
   distance: number;
   phase: 'intro' | 'follow' | 'outro';
@@ -145,7 +154,24 @@ export function buildFlyoverPlan(points: TrackPoint[]): FlyoverPlan {
     }
   }
 
-  return { coords, cum, total: len, bearings, followZoom, overview, track: { cum: rawCum, movingS, ele, pace, clockMs }, profile };
+  let centerEle: number[] | null = null;
+  if (hasEle) {
+    const firstEle = ele.find((e) => e != null) ?? 0;
+    const sampled = cum.map((d) => {
+      const i = lowerIndex(rawCum, (d / len) * total);
+      return ele[i] ?? firstEle;
+    });
+    // Heavy smoothing (≈ ±100 m of route): the camera should glide, not follow every bump.
+    const w = Math.max(2, Math.round(100 / spacing));
+    centerEle = sampled.map((_, i) => {
+      let sum = 0, n = 0;
+      for (let k = Math.max(0, i - w); k <= Math.min(sampled.length - 1, i + w); k++) { sum += sampled[k]; n++; }
+      return sum / n;
+    });
+  }
+  const overviewEle = centerEle ? centerEle.reduce((a, b) => a + b, 0) / centerEle.length : null;
+
+  return { coords, cum, total: len, bearings, centerEle, followZoom, overview: { ...overview, ele: overviewEle }, track: { cum: rawCum, movingS, ele, pace, clockMs }, profile };
 }
 
 /** Smoothed bearing at distance d (interpolated between samples). */
@@ -157,9 +183,19 @@ function bearingAt(plan: FlyoverPlan, d: number): number {
   return lerpAngle(plan.bearings[i], plan.bearings[j], f);
 }
 
-function followCamera(plan: FlyoverPlan, d: number) {
-  return { center: pointAtDistance(plan.coords, plan.cum, d).p, zoom: plan.followZoom, pitch: 62, bearing: bearingAt(plan, d), focusOffset: 0.18 };
+function eleAt(plan: FlyoverPlan, d: number): number | null {
+  const e = plan.centerEle;
+  if (!e) return null;
+  const i = Math.min(lowerIndex(plan.cum, d), e.length - 1);
+  const j = Math.min(i + 1, e.length - 1);
+  const seg = plan.cum[j] - plan.cum[i];
+  return lerp(e[i], e[j], seg > 0 ? (d - plan.cum[i]) / seg : 0);
 }
+
+function followCamera(plan: FlyoverPlan, d: number) {
+  return { center: pointAtDistance(plan.coords, plan.cum, d).p, zoom: plan.followZoom, pitch: 62, bearing: bearingAt(plan, d), focusOffset: 0.18, elevation: eleAt(plan, d) };
+}
+const lerpEle = (a: number | null, b: number | null, t: number) => (a != null && b != null ? lerp(a, b, t) : null);
 
 /** Camera for normalised time u. */
 export function cameraAt(plan: FlyoverPlan, u: number): CameraState {
@@ -172,7 +208,7 @@ export function cameraAt(plan: FlyoverPlan, u: number): CameraState {
     return {
       center: [lerp(ov.center[0], f.center[0], t), lerp(ov.center[1], f.center[1], t)],
       zoom, pitch: lerp(35, f.pitch, t), bearing: lerpAngle(ov.bearing, f.bearing, t),
-      focusOffset: lerp(0, f.focusOffset, t), distance: 0, phase: 'intro',
+      focusOffset: lerp(0, f.focusOffset, t), elevation: lerpEle(ov.ele, f.elevation, t), distance: 0, phase: 'intro',
     };
   }
   if (u < OUTRO) {
@@ -186,7 +222,7 @@ export function cameraAt(plan: FlyoverPlan, u: number): CameraState {
   return {
     center: [lerp(f.center[0], ov.center[0], t), lerp(f.center[1], ov.center[1], t)],
     zoom: lerp(f.zoom, ov.zoom + 0.15, t), pitch: lerp(f.pitch, 48, t), bearing: lerpAngle(f.bearing, endBearing, t),
-    focusOffset: lerp(f.focusOffset, 0, t), distance: plan.total, phase: 'outro',
+    focusOffset: lerp(f.focusOffset, 0, t), elevation: lerpEle(f.elevation, ov.ele, t), distance: plan.total, phase: 'outro',
   };
 }
 

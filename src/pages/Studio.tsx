@@ -18,6 +18,7 @@ import { exportStatusImage } from '../media/imageExport';
 import { canShareFiles, downloadBlob, shareBlob, slug } from '../media/share';
 import { MAP_STYLE_LIST, styleReady } from '../lib/mapStyles';
 import { fmtDuration } from '../lib/format';
+import { withDemElevation } from '../lib/activityBuilder';
 import type { Activity, OverlayConfig, Track } from '../types';
 
 const ACCENTS = ['#b8f34a', '#ffffff', '#ffd166', '#4ea1ff', '#ff7ab6', '#2ee6c5'];
@@ -29,7 +30,17 @@ export function StudioPage() {
   const { id = '' } = useParams();
   const activity = useLiveQuery(() => db.activities.get(id), [id]);
   const track = useLiveQuery(() => db.tracks.get(id), [id]);
-  if (activity === undefined || track === undefined) return <div className="page"><span className="spinner" /></div>;
+  const [elevChecked, setElevChecked] = useState(false);
+  // The flyover camera needs ground elevation along the route. Walks saved offline may lack it:
+  // fetch it from the DEM now (and persist) so the camera can glide over the 3D terrain.
+  useEffect(() => {
+    if (!track || elevChecked) return;
+    if (track.points.every((p) => p.ele != null)) { setElevChecked(true); return; }
+    withDemElevation(track.points).then(async (r) => {
+      if (r.source === 'dem') await db.tracks.update(track.activityId, { points: r.points });
+    }).finally(() => setElevChecked(true));
+  }, [track, elevChecked]);
+  if (activity === undefined || track === undefined || (track && !elevChecked)) return <div className="page"><span className="spinner" /></div>;
   if (!activity || !track) return <div className="page empty">Walk not found.</div>;
   return <Studio activity={activity} track={track} />;
 }
@@ -121,10 +132,11 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
   }, [showFrame]);
 
   useEffect(() => { sceneRef.current?.setColor(cfg.routeColor); }, [cfg.routeColor]);
+  useEffect(() => { sceneRef.current?.setExaggeration(cfg.exaggeration); }, [cfg.exaggeration]);
 
   const onMapReady = (map: maplibregl.Map) => {
     mapRef.current = map;
-    const scene = new FlyoverScene(map, plan, cfgRef.current.routeColor);
+    const scene = new FlyoverScene(map, plan, cfgRef.current.routeColor, cfgRef.current.exaggeration);
     scene.install();
     sceneRef.current = scene;
   };

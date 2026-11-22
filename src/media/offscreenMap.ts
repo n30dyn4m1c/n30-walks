@@ -70,7 +70,9 @@ export function waitForRender(map: maplibregl.Map, timeoutMs = 6000): Promise<vo
       resolve();
     };
     const t = setTimeout(() => finish(true), timeoutMs);
-    map.once('idle', () => finish());
+    // After 'idle', render once more: guarantees the drawing buffer holds a complete
+    // frame for the final camera (the very first capture was otherwise blank).
+    map.once('idle', () => { map.once('render', () => finish()); map.triggerRepaint(); });
     map.triggerRepaint();
   });
 }

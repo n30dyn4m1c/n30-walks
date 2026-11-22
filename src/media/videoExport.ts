@@ -61,7 +61,7 @@ export async function exportFlyoverVideo(
   onProgress({ frame: 0, frames, phase: 'loading' });
   const plan = buildFlyoverPlan(track.points);
   const off = await createOffscreenMap(cfg.mapStyle, width, { terrain: true, exaggeration: cfg.exaggeration });
-  const scene = new FlyoverScene(off.map, plan, cfg.routeColor);
+  const scene = new FlyoverScene(off.map, plan, cfg.routeColor, cfg.exaggeration);
   scene.install();
 
   const canvas = document.createElement('canvas');
@@ -86,6 +86,7 @@ export async function exportFlyoverVideo(
   };
 
   Object.assign(renderStats, { frames: 0, timeouts: 0, totalMs: 0 });
+  const prof = { camera: 0, wait: 0, draw: 0, overlay: 0, encode: 0 };
   try {
     // Warm-up: load tiles for the opening shot before frame 0.
     scene.setFrame(0);
@@ -94,9 +95,13 @@ export async function exportFlyoverVideo(
       if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
       if (encodeError) throw encodeError;
       const u = i / (frames - 1);
+      let ts = performance.now();
       const cam = scene.setFrame(u, (i / FPS) % 1);
+      prof.camera += performance.now() - ts; ts = performance.now();
       await waitForRender(off.map);
+      prof.wait += performance.now() - ts; ts = performance.now();
       ctx.drawImage(off.map.getCanvas(), 0, 0, width, height);
+      prof.draw += performance.now() - ts; ts = performance.now();
       const live = liveStatsAt(plan, cam.distance);
       const progress = cam.distance / plan.total;
       drawOverlay(ctx, width, height, cfg, {
@@ -105,11 +110,14 @@ export async function exportFlyoverVideo(
         live: u < OUTRO ? { distanceM: live.distanceM, movingS: live.movingS, eleM: live.eleM } : undefined,
         alpha: Math.min(1, u / 0.04 + 0.15),
       });
+      prof.overlay += performance.now() - ts; ts = performance.now();
       const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / FPS), duration: Math.round(1e6 / FPS) });
       encoder.encode(frame, { keyFrame: i % (FPS * 2) === 0 });
       frame.close();
       // Back-pressure: don't let the encoder queue grow unbounded on slow devices.
       while (encoder.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 5));
+      prof.encode += performance.now() - ts;
+      if (i % 30 === 29) console.info(`[export] frame ${i + 1}: avg ms ` + Object.entries(prof).map(([k, v]) => `${k}=${(v / (i + 1)).toFixed(0)}`).join(' '));
       onProgress({ frame: i + 1, frames, phase: 'rendering' });
     }
     console.info(`[export] ${frames} frames, avg render wait ${(renderStats.totalMs / Math.max(1, renderStats.frames)).toFixed(0)} ms, ${renderStats.timeouts} tile timeouts`);

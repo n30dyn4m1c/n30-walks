@@ -151,10 +151,18 @@ Use `--no-open` (for example `node scripts/mobile.mjs android --no-open`) to ski
 
 ### What was verified in this build environment
 
-- `npm test`: 27 unit tests pass. They include the GPS-filter accuracy budgets and flyover camera smoothness: under 6° bearing change per frame, and continuity at phase boundaries.
-- `npm run e2e` in headless Chromium with software WebGL: mocked web geolocation recording, a 30× simulated walk, the activity page, the flyover studio, JPEG and MP4 export validated with `ffprobe`, PRs, history persistence after reload, and route planning. Results are in the PR description.
-- The container's network allowed only the AWS DEM host, so the e2e run used the automatic **Relief** fallback style and the straight-line routing fallback. OpenFreeMap, CARTO, Esri and OSRM were **not** reachable from the test environment.
-- `scripts/mobile.mjs android --no-open` generates and patches the Android project and syncs it. Building an APK, and anything on iOS, needs Android Studio or Xcode on your machine and was **not** done here.
+| Check | Result |
+|---|---|
+| `npm test` | **28/28 unit tests pass.** They cover the GPS-filter accuracy budgets (≈1% error on a straight walk, ≈3% on a winding loop, <30 m drift over 5 min standing still with ±4 m noise) and flyover camera smoothness: <6° bearing change per frame, continuity at phase boundaries, and <3 m camera-altitude change per frame. |
+| `npm run build` | Type-check and production build succeed. |
+| `npm run e2e` (headless Chromium, software WebGL) | **All checks pass.** Steps: mocked web geolocation recording; a 30× simulated 1.6 km walk recorded as 1.65 km; activity page with pace-coloured 3D route, splits and DEM elevation; studio flyover; JPEG export **720×1280 JPEG**; MP4 export **H.264, 720×1280, 30 fps, 300 frames, 10.0 s, 5.8 MB, MP4 container** (checked with `ffprobe`); PRs computed; history persists across reload; route planned and saved. |
+| Video frame check | The brightness of every frame was analysed. An early build flickered during the intro and outro because MapLibre's terrain-clamped camera altitude flipped between 0 m and the real altitude. The camera altitude is now driven from the DEM profile, and a harness confirmed the flips are gone. |
+| `node scripts/mobile.mjs android --no-open` | Generates `android/` with all 3 native plugins, patches permissions (idempotent on re-run), and syncs. |
+
+**Not verified here:**
+- **Basemap tiles and routing.** The container's network allowed only the AWS DEM host, so OpenFreeMap, CARTO, Esri and OSRM were unreachable. The e2e run used the automatic **Relief** fallback style and straight-line routing.
+- **Native builds.** Building an APK or IPA and running on a device need Android Studio or Xcode.
+- **Export speed on real hardware.** Under CPU-emulated WebGL, a 10 s 720p export took ~35 min. Per-frame profiling showed ~5 s of each frame was GPU raster work (tile waits were ~0.3 s), which real GPUs do in milliseconds. The app logs `[export] … avg ms` per stage in the console, so you can measure on your phone.
 
 ---
 
@@ -176,4 +184,5 @@ Use `--no-open` (for example `node scripts/mobile.mjs android --no-open`) to ski
 4. **Audio and music** in exported videos (licensing), and audio cues per km while recording.
 5. **Health platforms.** Should we write walks to Apple Health and Google Health Connect, and read real step counts from them?
 6. **Cloud backup or sync** (still private, no social features)? Currently there is a manual JSON export and import.
-7. **Export speed.** 1080p export renders every frame at full resolution and waits for tiles. Expect 1–3 minutes on mid-range phones for 15 s. 720p is offered as the fast option.
+7. **Export speed on phones is unmeasured.** Export renders every frame at full resolution and waits for tiles, so it is roughly proportional to GPU speed × frames. 720p is offered as the fast option. If mid-range phones turn out too slow, the next steps are 24 fps or reusing tiles across frames.
+8. **Walks saved offline.** A walk recorded with no DEM elevation gets elevation fetched when its studio opens. If that's also offline, the flyover camera uses a fixed 0 m centre altitude: stable, but low over high terrain.

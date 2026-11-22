@@ -46,6 +46,16 @@ describe('flyover plan', () => {
     }
   });
 
+  it('camera centre elevation is supplied and continuous (no terrain-sampling jumps)', () => {
+    expect(plan.centerEle).not.toBeNull();
+    let maxStep = 0;
+    for (let i = 1; i < 450; i++) {
+      const a = cameraAt(plan, (i - 1) / 449).elevation!, b = cameraAt(plan, i / 449).elevation!;
+      maxStep = Math.max(maxStep, Math.abs(b - a));
+    }
+    expect(maxStep).toBeLessThan(3); // metres per frame
+  });
+
   it('live stats map distance back to the track', () => {
     const end = liveStatsAt(plan, plan.total);
     expect(end.distanceM).toBeCloseTo(plan.track.cum[plan.track.cum.length - 1], 0);

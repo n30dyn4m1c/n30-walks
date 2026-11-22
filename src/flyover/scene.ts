@@ -16,11 +16,17 @@ const line = (coords: LngLat[]): GeoJSON.Feature<GeoJSON.LineString> => ({ type:
 const point = (c: LngLat): GeoJSON.Feature<GeoJSON.Point> => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: c } });
 
 export class FlyoverScene {
-  constructor(private map: maplibregl.Map, private plan: FlyoverPlan, private color: string) {}
+  constructor(private map: maplibregl.Map, private plan: FlyoverPlan, private color: string, private exaggeration = 1.5) {}
+
+  setExaggeration(x: number) { this.exaggeration = x; }
 
   /** (Re-)add sources and layers. Call after every style load. */
   install() {
     const m = this.map;
+    // We supply the centre altitude ourselves (see FlyoverPlan.centerEle) for a jump-free camera.
+    // MapLibre's own clamping samples whichever terrain tile is loaded at the current zoom and
+    // flips between 0 m and the real altitude during zoom changes (visible flicker).
+    m.setCenterClampedToGround(false);
     const start = this.plan.coords[0];
     if (!m.getSource(SRC_FULL)) m.addSource(SRC_FULL, { type: 'geojson', data: line(this.plan.coords) });
     if (!m.getSource(SRC_DONE)) m.addSource(SRC_DONE, { type: 'geojson', data: line([start]) });
@@ -50,8 +56,11 @@ export class FlyoverScene {
     const { clientWidth: w, clientHeight: h } = m.getContainer();
     // Plan zooms are for a 540 px wide viewport; keep identical framing at any size.
     const zoomAdj = Math.log2(Math.max(1, w) / REF_W);
+    // Terrain is rendered exaggerated, so the centre altitude must be too.
+    const terrainOn = !!m.getTerrain();
     m.jumpTo({
       center: cam.center, zoom: cam.zoom + zoomAdj, pitch: cam.pitch, bearing: cam.bearing,
+      elevation: terrainOn && cam.elevation != null ? cam.elevation * this.exaggeration : 0,
       padding: { top: h * cam.focusOffset, bottom: 0, left: 0, right: 0 },
     });
     const head = pointAtDistance(this.plan.coords, this.plan.cum, cam.distance).p;
