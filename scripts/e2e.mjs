@@ -164,6 +164,8 @@ try {
 
   await page.goto(`${server.url}/history`);
   await page.reload();
+  // IndexedDB queries resolve asynchronously after reload: wait for the list before counting.
+  await page.locator('a.card.link').first().waitFor({ timeout: 15000 });
   const rows = await page.locator('a.card.link').count();
   check(rows === 2, `history persists across reload (${rows} walks)`);
   await page.screenshot({ path: `${OUT}/09-history.png` });

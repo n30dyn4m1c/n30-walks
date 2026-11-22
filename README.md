@@ -156,13 +156,14 @@ Use `--no-open` (for example `node scripts/mobile.mjs android --no-open`) to ski
 | `npm test` | **28/28 unit tests pass.** They cover the GPS-filter accuracy budgets (≈1% error on a straight walk, ≈3% on a winding loop, <30 m drift over 5 min standing still with ±4 m noise) and flyover camera smoothness: <6° bearing change per frame, continuity at phase boundaries, and <3 m camera-altitude change per frame. |
 | `npm run build` | Type-check and production build succeed. |
 | `npm run e2e` (headless Chromium, software WebGL) | **All checks pass.** Steps: mocked web geolocation recording; a 30× simulated 1.6 km walk recorded as 1.65 km; activity page with pace-coloured 3D route, splits and DEM elevation; studio flyover; JPEG export **720×1280 JPEG**; MP4 export **H.264, 720×1280, 30 fps, 300 frames, 10.0 s, 5.8 MB, MP4 container** (checked with `ffprobe`); PRs computed; history persists across reload; route planned and saved. |
-| Video frame check | The brightness of every frame was analysed. An early build flickered during the intro and outro because MapLibre's terrain-clamped camera altitude flipped between 0 m and the real altitude. The camera altitude is now driven from the DEM profile, and a harness confirmed the flips are gone. |
+| Video frame check | The brightness of all 300 frames was analysed. An early build flickered during the intro and outro because MapLibre's terrain-clamped camera altitude flipped between 0 m and the real altitude. The camera altitude is now driven from the DEM profile. The final export has **0 frame-to-frame brightness jumps**, and its first frame is not blank. |
+| Persistence | 9 demo walks survive a reload and a fresh page (app restart). PRs and trends recompute correctly. |
 | `node scripts/mobile.mjs android --no-open` | Generates `android/` with all 3 native plugins, patches permissions (idempotent on re-run), and syncs. |
 
 **Not verified here:**
 - **Basemap tiles and routing.** The container's network allowed only the AWS DEM host, so OpenFreeMap, CARTO, Esri and OSRM were unreachable. The e2e run used the automatic **Relief** fallback style and straight-line routing.
 - **Native builds.** Building an APK or IPA and running on a device need Android Studio or Xcode.
-- **Export speed on real hardware.** Under CPU-emulated WebGL, a 10 s 720p export took ~35 min. Per-frame profiling showed ~5 s of each frame was GPU raster work (tile waits were ~0.3 s), which real GPUs do in milliseconds. The app logs `[export] … avg ms` per stage in the console, so you can measure on your phone.
+- **Export speed on real hardware.** Under CPU-emulated WebGL, a 10 s 720p export took ~41 min. Per-frame profiling showed ~8 s of each frame was GPU raster work (tile waits were ~0.3 s), which real GPUs do in milliseconds. The app logs `[export] … avg ms` per stage in the console, so you can measure on your phone.
 
 ---
 
