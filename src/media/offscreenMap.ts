@@ -56,7 +56,7 @@ export async function createOffscreenMap(styleId: MapStyleId, outW: number, opts
 /** Wait until the current camera is fully rendered (tiles + terrain loaded), with a safety timeout. */
 export const renderStats = { frames: 0, timeouts: 0, totalMs: 0 };
 
-export function waitForRender(map: maplibregl.Map, timeoutMs = 6000): Promise<void> {
+export function waitForRender(map: maplibregl.Map, timeoutMs = 6000, settle = false): Promise<void> {
   const t0 = performance.now();
   return new Promise((resolve) => {
     let done = false;
@@ -70,9 +70,13 @@ export function waitForRender(map: maplibregl.Map, timeoutMs = 6000): Promise<vo
       resolve();
     };
     const t = setTimeout(() => finish(true), timeoutMs);
-    // After 'idle', render once more: guarantees the drawing buffer holds a complete
-    // frame for the final camera (the very first capture was otherwise blank).
-    map.once('idle', () => { map.once('render', () => finish()); map.triggerRepaint(); });
+    // settle: after 'idle', render once more so the drawing buffer holds a complete frame.
+    // Needed for the first capture of a fresh map (otherwise blank); later frames don't need it.
+    map.once('idle', () => {
+      if (!settle) return finish();
+      map.once('render', () => finish());
+      map.triggerRepaint();
+    });
     map.triggerRepaint();
   });
 }

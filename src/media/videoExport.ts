@@ -90,7 +90,7 @@ export async function exportFlyoverVideo(
   try {
     // Warm-up: load tiles for the opening shot before frame 0.
     scene.setFrame(0);
-    await waitForRender(off.map, 15000);
+    await waitForRender(off.map, 15000, true);
     for (let i = 0; i < frames; i++) {
       if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
       if (encodeError) throw encodeError;

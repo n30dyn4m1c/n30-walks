@@ -42,7 +42,7 @@ export async function exportStatusImage(activity: Activity, track: Track, cfg: O
       bearing: view === '3d' ? plan.overview.bearing : 0,
       padding: { top: REF_H * 0.05, bottom: REF_H * 0.3, left: 0, right: 0 },
     });
-    await waitForRender(off.map, 20000);
+    await waitForRender(off.map, 20000, true);
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
