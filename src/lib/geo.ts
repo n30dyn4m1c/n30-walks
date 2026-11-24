@@ -194,3 +194,35 @@ export function fitZoom(b: [number, number, number, number], widthPx: number, he
   const zy = Math.log2((heightPx - 2 * paddingPx) / 512 / dy);
   return Math.max(1, Math.min(18, Math.min(zx, zy)));
 }
+
+/**
+ * The closest point on a polyline to `p`: how far `p` is from the line (`offM`)
+ * and how far along the line that closest point is (`alongM`), both in metres.
+ * Where the line passes near `p` more than once (a loop's shared start and end,
+ * an out-and-back), the pass whose `alongM` is nearest `hintAlongM` wins among
+ * passes within 25 m of the best, so progress doesn't jump to the other pass.
+ */
+export function nearestOnPath(coords: LngLat[], cum: number[], p: LngLat, hintAlongM = 0): { offM: number; alongM: number } {
+  if (coords.length < 2) return { offM: coords.length ? haversine(coords[0], p) : Infinity, alongM: 0 };
+  // Local flat projection around p: plenty accurate over the length of one segment.
+  const kx = 111_320 * Math.cos((p[1] * Math.PI) / 180), ky = 110_540;
+  const cands: { off: number; along: number }[] = [];
+  let best = Infinity;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const ax = (coords[i][0] - p[0]) * kx, ay = (coords[i][1] - p[1]) * ky;
+    const dx = (coords[i + 1][0] - p[0]) * kx - ax, dy = (coords[i + 1][1] - p[1]) * ky - ay;
+    const l2 = dx * dx + dy * dy;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2)) : 0;
+    const off = Math.hypot(ax + t * dx, ay + t * dy);
+    cands.push({ off, along: cum[i] + t * (cum[i + 1] - cum[i]) });
+    if (off < best) best = off;
+  }
+  let pick = cands[0];
+  let pickScore = Infinity;
+  for (const c of cands) {
+    if (c.off > best + 25) continue;
+    const score = Math.abs(c.along - hintAlongM);
+    if (score < pickScore) { pickScore = score; pick = c; }
+  }
+  return { offM: pick.off, alongM: pick.along };
+}

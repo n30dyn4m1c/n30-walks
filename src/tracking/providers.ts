@@ -57,6 +57,11 @@ export class WebProvider implements LocationProvider {
 
 const BackgroundGeolocation = registerPlugin<BackgroundGeolocationPlugin>('BackgroundGeolocation');
 
+/** Open the app's system settings page (native only), where location can be allowed. */
+export async function openLocationSettings(): Promise<void> {
+  await BackgroundGeolocation.openSettings();
+}
+
 export class NativeProvider implements LocationProvider {
   readonly kind = 'native' as const;
   private id: string | null = null;
@@ -74,8 +79,8 @@ export class NativeProvider implements LocationProvider {
       (location, error) => {
         if (error) {
           if (error.code === 'NOT_AUTHORIZED') {
+            // The Record screen shows an "Open settings" button for this (see openLocationSettings).
             onError({ code: 'denied', message: 'Location permission denied. Open settings to allow “Always” / “While using”.' });
-            if (window.confirm('Stride needs location access to record walks. Open settings?')) BackgroundGeolocation.openSettings();
           } else onError({ code: 'unavailable', message: error.message });
           return;
         }

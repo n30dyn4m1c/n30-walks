@@ -6,19 +6,37 @@ import type maplibregl from 'maplibre-gl';
 import { MapView } from '../components/MapView';
 import { DraftCard } from '../components/DraftCard';
 import { Icon } from '../components/Icon';
-import { Sheet, Stat, StylePicker, Segmented, useMapStyle, useSettings, useToast } from '../components/ui';
+import { HoldButton, Sheet, Stat, StylePicker, Segmented, useMapStyle, useSettings, useToast } from '../components/ui';
 import { db } from '../db/db';
 import { recorder, useRecorder, elapsedSeconds, UNFINISHED_DRAFT_MESSAGE } from '../tracking/recorder';
-import { isNative } from '../tracking/providers';
+import { isNative, openLocationSettings } from '../tracking/providers';
+import { buzz } from '../lib/haptics';
 import { addRouteLayers, setUserPosition, lineFeature, setData } from '../lib/mapLayers';
-import { fmtDistance, fmtDuration, fmtPace, distanceUnit, paceUnit, fmtDistance as fd } from '../lib/format';
+import { fmtDistance, fmtDuration, fmtPace, distanceUnit, paceUnit, fmtDistance as fd, M_PER_MI } from '../lib/format';
 import { proceduralLoop, DEMO_START } from '../lib/demo';
-import type { LngLat } from '../lib/geo';
+import { cumulativeDistances, nearestOnPath, type LngLat } from '../lib/geo';
 
 function accuracyClass(acc?: number) {
   if (acc == null) return '';
   return acc <= 12 ? 'good' : acc <= 30 ? 'ok' : 'bad';
 }
+
+/** Signal meter: Searching → Weak → Ready. */
+function signalLabel(acc?: number) {
+  if (acc == null) return 'Searching for GPS…';
+  return `${acc > 30 ? 'Weak GPS' : 'GPS ready'} ±${Math.round(acc)} m`;
+}
+
+/** More than this far from a followed route (or the fix's own accuracy, if worse) counts as off route. */
+const OFF_ROUTE_M = 40;
+/** After this long without a fix, offer "Start anyway". */
+const START_ANYWAY_AFTER_MS = 8000;
+/** Hidden for longer than this while recording on the web: tell the user GPS was off. */
+const GAP_NOTICE_MS = 60_000;
+const LOCK_TIP_KEY = 'stride.lockTipSeen';
+
+function readFlag(key: string) { try { return localStorage.getItem(key) === '1'; } catch { return false; } }
+function writeFlag(key: string) { try { localStorage.setItem(key, '1'); } catch { /* storage blocked */ } }
 
 export function RecordPage() {
   const settings = useSettings();
@@ -34,6 +52,7 @@ export function RecordPage() {
   const [routeOpen, setRouteOpen] = useState(false);
   const [stylesOpen, setStylesOpen] = useState(false);
   const [finishOpen, setFinishOpen] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [simKm, setSimKm] = useState('3');
   const [simSpeed, setSimSpeed] = useState<'5' | '10' | '30'>('10');
   const [params] = useSearchParams();
@@ -47,6 +66,15 @@ export function RecordPage() {
     return () => { recorder.cancelAcquire(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // No fix for a while: let the user start anyway (the first fixes then start the track).
+  const [searchingLong, setSearchingLong] = useState(false);
+  const hasFix = !!rec.lastFix;
+  useEffect(() => {
+    if (hasFix) { setSearchingLong(false); return; }
+    const t = setTimeout(() => setSearchingLong(true), START_ANYWAY_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [hasFix]);
 
   const fix = rec.lastFix;
   const here: LngLat | null = fix ? [fix.lon, fix.lat] : null;
@@ -77,6 +105,48 @@ export function RecordPage() {
     if (firstFix.current) { map.jumpTo({ center: here, zoom: 16.2 }); firstFix.current = false; }
     else map.easeTo({ center: here, duration: 600 });
   }, [fix?.t, follow]);
+
+  // ---------- following a route: distance to go + off-route warning ----------
+  const routeCum = useMemo(() => (plannedRoute ? cumulativeDistances(plannedRoute.geometry) : null), [plannedRoute]);
+  const alongRef = useRef(0);
+  const routeProgress = useMemo(() => {
+    if (!plannedRoute || !routeCum || !fix || !live) return null;
+    const r = nearestOnPath(plannedRoute.geometry, routeCum, [fix.lon, fix.lat], alongRef.current);
+    const total = routeCum[routeCum.length - 1];
+    return { alongM: r.alongM, offM: r.offM, toGoM: Math.max(0, total - r.alongM), off: r.offM > Math.max(OFF_ROUTE_M, fix.acc) };
+  }, [plannedRoute, routeCum, fix, live]);
+  useEffect(() => { alongRef.current = 0; }, [plannedRoute?.id, rec.startedAt]);
+  useEffect(() => { if (routeProgress && !routeProgress.off) alongRef.current = routeProgress.alongM; }, [routeProgress]);
+  const offRoute = !!routeProgress?.off;
+  useEffect(() => { if (offRoute) buzz([60, 80, 60]); }, [offRoute]);
+
+  // ---------- screen-reader announcement at every km / mile ----------
+  const u = settings.units;
+  const unitM = u === 'imperial' ? M_PER_MI : 1000;
+  const wholeUnits = live ? Math.floor(rec.distanceM / unitM) : 0;
+  const [announcement, setAnnouncement] = useState('');
+  useEffect(() => {
+    if (wholeUnits < 1) return;
+    const s = recorder.getState();
+    const pace = s.distanceM > 0 ? s.movingS / (s.distanceM / 1000) : 0;
+    setAnnouncement(`${wholeUnits} ${u === 'imperial' ? 'mile' : 'kilometre'}${wholeUnits === 1 ? '' : 's'}. Time ${fmtDuration(elapsedSeconds(s))}. Average pace ${fmtPace(pace, u)} ${paceUnit(u)}.`);
+  }, [wholeUnits, u]);
+
+  // ---------- web: the browser stops GPS while the screen is locked ----------
+  const webGps = !isNative() && live && rec.source === 'gps';
+  const [lockTipSeen, setLockTipSeen] = useState(() => readFlag(LOCK_TIP_KEY));
+  const [gapMin, setGapMin] = useState<number | null>(null);
+  useEffect(() => {
+    if (!webGps) return;
+    let hiddenAt: number | null = document.hidden ? Date.now() : null;
+    const onVis = () => {
+      if (document.hidden) { hiddenAt = Date.now(); return; }
+      if (hiddenAt != null && Date.now() - hiddenAt > GAP_NOTICE_MS) setGapMin(Math.round((Date.now() - hiddenAt) / 60_000));
+      hiddenAt = null;
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [webGps]);
 
   const startWalk = async () => {
     try { await recorder.start({ routeId }); } catch (e) { toast((e as Error).message); }
@@ -112,8 +182,13 @@ export function RecordPage() {
 
   const elapsed = elapsedSeconds(rec);
   const avgPace = rec.distanceM > 20 ? rec.movingS / (rec.distanceM / 1000) : 0;
-  const u = settings.units;
   const simulated = recorder.simulated;
+  const pause = () => { buzz(30); recorder.pause(); };
+  const resume = () => { buzz([30, 60, 30]); recorder.resume(); };
+  const closeFinish = () => { setFinishOpen(false); setConfirmDiscard(false); };
+  const retryGps = () => { firstFix.current = true; recorder.acquire({ routeId }).catch(() => {}); };
+  // Before a walk starts, a GPS problem replaces the Start button with a card that says what to do.
+  const gpsProblem = !live && rec.status !== 'saving' && !draft ? rec.error : null;
 
   return (
     <div className="page full">
@@ -136,7 +211,7 @@ export function RecordPage() {
         <div className="row between">
           <div className="gps-pill" aria-live="polite">
             <span className={`dot ${accuracyClass(fix?.acc)}`} />
-            {rec.error ? 'GPS error' : fix ? `GPS ±${Math.round(fix.acc)} m` : 'Finding GPS…'}
+            {rec.error ? 'GPS error' : signalLabel(fix?.acc)}
             {rec.source === 'simulated' && <span className="badge">SIM {simulated?.speedup}×</span>}
           </div>
           <div className="row" style={{ gap: 8 }}>
@@ -146,11 +221,23 @@ export function RecordPage() {
         </div>
         {stylesOpen && <div className="row" style={{ justifyContent: 'flex-end', marginTop: 10 }}><StylePicker value={styleId} onChange={(v) => { setStyleId(v); setStylesOpen(false); }} /></div>}
         <div className="stack" style={{ marginTop: 10, gap: 8 }}>
-          {rec.error && <div className="banner err">{rec.error.message}</div>}
+          {rec.error && live && <div className="banner err">{rec.error.message}</div>}
+          {offRoute && routeProgress && <div className="banner err" role="status">Off route · {fd(routeProgress.offM, u, true)} from the line</div>}
           {rec.draftError && live && <div className="banner err">Can't write to storage (device full?). This walk isn't protected if the app closes: free up space, or finish and save it now.</div>}
-          {!isNative() && live && rec.source === 'gps' && <div className="banner">Keep this screen on — the browser stops GPS when the screen locks. Use the Android app for pocket tracking.</div>}
+          {webGps && gapMin != null && (
+            <div className="banner row between" role="status">
+              <span>GPS was off for {gapMin} min while the screen was locked. That stretch is a straight line.</span>
+              <button className="icon-btn sm" aria-label="Dismiss" onClick={() => setGapMin(null)}><Icon name="close" size={16} /></button>
+            </div>
+          )}
+          {webGps && !lockTipSeen && (
+            <div className="banner row between">
+              <span>Tip: keep this screen on. The browser stops GPS when the screen locks. The Android app tracks in your pocket.</span>
+              <button className="icon-btn sm" aria-label="Got it" onClick={() => { writeFlag(LOCK_TIP_KEY); setLockTipSeen(true); }}><Icon name="close" size={16} /></button>
+            </div>
+          )}
           {rec.status === 'paused' && <div className="banner">Paused — tap Resume to keep recording.</div>}
-          {rec.autoPaused && rec.status === 'recording' && <div className="banner">Not moving — the clock keeps running, distance doesn't.</div>}
+          {rec.autoPaused && rec.status === 'recording' && <div className="banner">Stopped · moving time paused</div>}
           {simulated?.finished && live && <div className="banner">Simulated route complete — tap Finish to save it.</div>}
         </div>
       </div>
@@ -159,24 +246,29 @@ export function RecordPage() {
       <div className="rec-panel">
         {live || rec.status === 'saving' ? (
           <>
-            {plannedRoute && <div className="faint small" style={{ textAlign: 'center', marginBottom: 8 }}>Following “{plannedRoute.name}” · {fd(plannedRoute.distanceM, u, true)}</div>}
-            <div style={{ textAlign: 'center' }}>
-              <div className="stat xl"><div className="label">Time</div><div className="value tnum">{fmtDuration(elapsed)}</div></div>
+            {plannedRoute && (
+              <div className="faint small" style={{ textAlign: 'center', marginBottom: 8 }}>
+                Following “{plannedRoute.name}” · {routeProgress ? <strong className="tnum" style={{ color: 'var(--text)' }}>{fd(routeProgress.toGoM, u, true)} to go</strong> : fd(plannedRoute.distanceM, u, true)}
+              </div>
+            )}
+            <div className="stat-grid two" style={{ textAlign: 'center' }}>
+              <Stat label="Time" value={fmtDuration(elapsed)} size="xl" />
+              <Stat label="Distance" value={fmtDistance(rec.distanceM, u)} unit={distanceUnit(u)} size="xl" />
             </div>
-            <div className="stat-grid" style={{ marginTop: 16, textAlign: 'center' }}>
-              <Stat label="Distance" value={fmtDistance(rec.distanceM, u)} unit={distanceUnit(u)} size="lg" />
-              <Stat label="Pace" value={fmtPace(rec.currentPace, u)} unit={paceUnit(u)} size="lg" />
-              <Stat label="Avg pace" value={fmtPace(avgPace, u)} unit={paceUnit(u)} size="lg" />
+            <div className="stat-grid two" style={{ marginTop: 14, textAlign: 'center' }}>
+              <Stat label="Pace now" value={fmtPace(rec.currentPace, u)} unit={paceUnit(u)} />
+              <Stat label="Avg pace" value={fmtPace(avgPace, u)} unit={paceUnit(u)} />
             </div>
+            <div className="sr-only" aria-live="polite">{announcement}</div>
             <div className="controls">
               {rec.status === 'recording' && (
-                <button className="ctrl-btn pause" onClick={() => recorder.pause()}><Icon name="pause" size={26} stroke={3} /><span>Pause</span></button>
+                <button className="ctrl-btn pause" onClick={pause}><Icon name="pause" size={26} stroke={3} /><span>Pause</span></button>
               )}
               {rec.status === 'paused' && (
-                <button className="ctrl-btn go" onClick={() => recorder.resume()}><Icon name="play" size={26} fill /><span>Resume</span></button>
+                <button className="ctrl-btn go" onClick={resume}><Icon name="play" size={26} fill /><span>Resume</span></button>
               )}
               {live && (
-                <button className="ctrl-btn stop" onClick={() => setFinishOpen(true)}><Icon name="stop" size={22} fill /><span>Finish</span></button>
+                <HoldButton className="ctrl-btn stop" title="Press and hold to finish" onHold={() => setFinishOpen(true)} onTap={() => toast('Hold Finish to end the walk')}><Icon name="stop" size={22} fill /><span>Finish</span></HoldButton>
               )}
               {rec.status === 'saving' && <div className="row muted"><span className="spinner" /> Saving walk…</div>}
             </div>
@@ -184,11 +276,28 @@ export function RecordPage() {
         ) : (
           draft ? (
             <DraftCard draft={draft} />
+          ) : gpsProblem ? (
+            <div className="card stack" role="alert">
+              <h3>{gpsProblem.code === 'denied' ? 'Stride can’t see your location' : gpsProblem.code === 'unsupported' ? 'No GPS on this device' : 'No GPS signal yet'}</h3>
+              <p className="muted small" style={{ margin: 0 }}>
+                {gpsProblem.code === 'denied'
+                  ? isNative() ? 'Allow location access for Stride in Settings (“While using the app” or “Always”), then try again.' : 'Allow location for this site in your browser’s site settings (the icon next to the address), then try again.'
+                  : gpsProblem.code === 'unsupported' ? gpsProblem.message
+                  : 'Move outdoors or near a window, and check that location is switched on.'}
+              </p>
+              <div className="row wrap">
+                {gpsProblem.code === 'denied' && isNative() && <button className="btn primary sm" onClick={() => openLocationSettings().catch(() => {})}>Open settings</button>}
+                {gpsProblem.code !== 'unsupported' && <button className={`btn sm ${gpsProblem.code === 'denied' && isNative() ? '' : 'primary'}`} onClick={retryGps}>Try again</button>}
+                <button className="btn sm ghost" onClick={() => setSimOpen(true)}><Icon name="sim" size={16} /> Use the simulator</button>
+              </div>
+            </div>
           ) : (
           <div className="stack" style={{ alignItems: 'center', gap: 14 }}>
             <button className="start-btn" onClick={startWalk} disabled={!fix}>
               {fix ? <><Icon name="play" size={22} fill /> Start walk</> : <><span className="spinner" /> Finding your location…</>}
             </button>
+            {fix && fix.acc > 30 && <div className="faint small" style={{ textAlign: 'center' }}>Weak signal: waiting a moment gives a cleaner start.</div>}
+            {!fix && searchingLong && <button className="btn sm ghost" onClick={startWalk}>Start anyway</button>}
             <div className="row" style={{ gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
               <button className="chip" onClick={() => setRouteOpen(true)}><Icon name="routes" size={16} /> {plannedRoute ? plannedRoute.name : 'No route'} ▾</button>
               <button className="chip" onClick={() => setSimOpen(true)}><Icon name="sim" size={16} /> Test with simulator</button>
@@ -198,12 +307,16 @@ export function RecordPage() {
         )}
       </div>
 
-      <Sheet open={finishOpen} onClose={() => setFinishOpen(false)} title="Finish this walk?">
+      <Sheet open={finishOpen} onClose={closeFinish} title="Finish this walk?">
         <div className="stack">
           <p className="muted small" style={{ margin: 0 }}>{fmtDistance(rec.distanceM, u)} {distanceUnit(u)} in {fmtDuration(elapsed)}</p>
-          <button className="btn primary lg block" onClick={() => { setFinishOpen(false); finish(); }}><Icon name="check" /> Save walk</button>
-          <button className="btn lg block" onClick={() => setFinishOpen(false)}>Keep walking</button>
-          <button className="btn ghost block danger" onClick={() => { if (confirm('Delete this walk? It will not be saved.')) { setFinishOpen(false); recorder.discard().then(() => recorder.acquire()); } }}><Icon name="trash" size={18} /> Discard walk</button>
+          <button className="btn primary lg block" onClick={() => { closeFinish(); finish(); }}><Icon name="check" /> Save walk</button>
+          <button className="btn lg block" onClick={closeFinish}>Keep walking</button>
+          {confirmDiscard ? (
+            <button className="btn block danger" onClick={() => { closeFinish(); recorder.discard().then(() => recorder.acquire()); toast('Walk discarded'); }}><Icon name="trash" size={18} /> Tap again to delete this walk</button>
+          ) : (
+            <button className="btn ghost block danger" onClick={() => setConfirmDiscard(true)}><Icon name="trash" size={18} /> Discard walk</button>
+          )}
         </div>
       </Sheet>
 

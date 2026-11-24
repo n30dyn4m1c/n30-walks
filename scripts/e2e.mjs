@@ -45,7 +45,9 @@ async function startServer() {
 }
 
 async function finishWalk(page) {
-  await page.getByRole('button', { name: 'Finish' }).click();
+  // Finish is hold-to-confirm for touch; keyboard activation opens it straight away.
+  await page.getByRole('button', { name: 'Finish' }).focus();
+  await page.keyboard.press('Enter');
   await page.getByRole('button', { name: 'Save walk' }).click();
 }
 

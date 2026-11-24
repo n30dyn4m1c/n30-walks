@@ -4,6 +4,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, DEFAULT_SETTINGS, getSettings } from '../db/db';
 import type { Settings } from '../types';
 import { MAP_STYLE_LIST } from '../lib/mapStyles';
+import { buzz } from '../lib/haptics';
 import type { MapStyleId } from '../types';
 
 /** Live settings (re-renders on change). Falls back to defaults while loading. */
@@ -104,6 +105,45 @@ export function StylePicker({ value, onChange }: { value: MapStyleId; onChange: 
         <button key={s.id} title={s.label} aria-label={`${s.label} map`} aria-pressed={s.id === value} className={`style-swatch ${s.id === value ? 'on' : ''}`} style={{ background: s.swatch }} onClick={() => onChange(s.id)} />
       ))}
     </div>
+  );
+}
+
+/**
+ * A button that fires only after being held for `ms` (a pocket tap can't trigger it).
+ * A short tap calls `onTap` instead (e.g. to show "Hold to finish"). Keyboard
+ * activation (Enter / Space) fires straight away: it can't happen by accident.
+ */
+export function HoldButton({ onHold, onTap, ms = 800, className = '', children, ...rest }: {
+  onHold: () => void; onTap?: () => void; ms?: number; className?: string; children: React.ReactNode;
+} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'className' | 'children'>) {
+  const [holding, setHolding] = useState(false);
+  const timer = useRef<number | null>(null);
+  const fired = useRef(false);
+  const cancel = () => {
+    if (timer.current != null) window.clearTimeout(timer.current);
+    timer.current = null;
+    setHolding(false);
+  };
+  useEffect(() => cancel, []);
+  return (
+    <button
+      type="button" {...rest}
+      className={`${className} hold ${holding ? 'holding' : ''}`}
+      style={{ '--hold-ms': `${ms}ms` } as React.CSSProperties}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        fired.current = false;
+        setHolding(true);
+        timer.current = window.setTimeout(() => { timer.current = null; fired.current = true; setHolding(false); buzz(40); onHold(); }, ms);
+      }}
+      onPointerUp={cancel} onPointerLeave={cancel} onPointerCancel={cancel}
+      onContextMenu={(e) => e.preventDefault()}
+      onClick={(e) => {
+        if (e.detail === 0) { onHold(); return; } // keyboard
+        if (!fired.current) onTap?.();
+        fired.current = false;
+      }}
+    >{children}</button>
   );
 }
 

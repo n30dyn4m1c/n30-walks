@@ -5,6 +5,7 @@
  * they export it.
  */
 import Dexie, { type Table } from 'dexie';
+import { Capacitor } from '@capacitor/core';
 import type { Activity, Goal, OverlayConfig, RecordingDraft, Route, Settings, Track } from '../types';
 
 export class StrideDB extends Dexie {
@@ -56,7 +57,8 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultMapStyle: 'outdoor',
   overlay: DEFAULT_OVERLAY,
   maxAccuracyM: 35,
-  keepScreenOn: true,
+  // Native builds track with the screen off (foreground service); only the web needs the screen on.
+  keepScreenOn: !Capacitor.isNativePlatform(),
   onboarded: false,
 };
 

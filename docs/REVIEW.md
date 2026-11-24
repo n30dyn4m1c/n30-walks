@@ -7,7 +7,7 @@ Each item has a status so work can continue across sessions.
 
 - **Reviewed at:** `4f7b596`.
 - **First fix round:** PR #5, merged as `4182674`.
-- **Second fix round:** action-plan steps 1–3 (M2, M3, M4, M8, M9, M10 and the accessibility batch).
+- **Second fix round:** action-plan steps 1–4 (M2, M3, M4, M8, M9, M10, the accessibility batch and the recording UX).
 - **How to continue:** pick the next ⬜ item from the [action plan](#action-plan) and change its status here in the same PR as the fix.
 
 ---
@@ -63,9 +63,9 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 | Draft write errors were unhandled rejections. | ✅ Now shown as a banner (`draftError`). |
 | Wake lock was re-requested without checking the old one. | ✅ |
 | JPEG result label always said 1080×1920. | ✅ |
-| `keepScreenOn: true` is the default on native too, where it isn't needed. Default it to off when `isNative()`. | ⬜ |
+| `keepScreenOn: true` is the default on native too, where it isn't needed. Default it to off when `isNative()`. | ✅ |
 | Importing the same GPX twice creates duplicates. Dedupe on `startedAt` plus distance. | ⬜ |
-| `NativeProvider` calls `window.confirm` inside the location callback; it can fire repeatedly. | ⬜ |
+| `NativeProvider` calls `window.confirm` inside the location callback; it can fire repeatedly. | ✅ Removed; the Record screen's denied card has "Open settings" (`openLocationSettings()`). |
 | A gap segment can still make a split with tiny duration; guard `fastest / sp.paceSPerKm` in `Activity.tsx` against 0/NaN. | ⬜ |
 
 ---
@@ -90,15 +90,16 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 ## UI/UX improvements
 
 ### Recording (highest leverage)
-- ⬜ **Location denied or unavailable:** show a card with "Open settings" and "Try again" instead of a spinner that never ends.
-- ⬜ **GPS signal meter** (Searching → Weak → Ready) and an option to "Start anyway".
-- ⬜ **Hold-to-finish** (~0.8 s) so a pocket tap can't open Finish. Replace `confirm()` for Discard with an Undo toast.
-- ⬜ **Stats layout:** make Distance and Time the largest; label current pace "Now" or put it behind a tap.
-- ⬜ **Auto-pause wording:** change to "Stopped · moving time paused".
-- ⬜ **Web lock-screen banner:** show it once as a tip, then a "GPS was off for N min" notice after returning.
-- ⬜ **Following a route:** show "x km to go" and an "Off route" chip when more than 40 m from the line.
-- ⬜ **Haptics** on pause and resume.
-- ⬜ **Recording pill** on other screens (time · distance) while a walk is in progress.
+- ✅ **Location denied or unavailable:** show a card with "Open settings" and "Try again" instead of a spinner that never ends.
+- ✅ **GPS signal meter** (Searching → Weak → Ready) and an option to "Start anyway".
+- ✅ **Hold-to-finish** (~0.8 s) so a pocket tap can't open Finish (`HoldButton`; a tap shows a hint, keyboard opens it directly).
+- 🟡 Replace `confirm()` for Discard with an Undo toast. `confirm()` is gone: Discard now needs a second tap in the sheet. A true Undo would need the draft kept until the toast expires.
+- ✅ **Stats layout:** make Distance and Time the largest; label current pace "Now" or put it behind a tap.
+- ✅ **Auto-pause wording:** change to "Stopped · moving time paused".
+- ✅ **Web lock-screen banner:** show it once as a tip, then a "GPS was off for N min" notice after returning.
+- ✅ **Following a route:** show "x km to go" and an "Off route" chip when more than 40 m from the line.
+- ✅ **Haptics** on pause and resume (`navigator.vibrate`, so Android only), on going off route, and when a hold completes.
+- ✅ **Recording pill** on other screens (time · distance) while a walk is in progress.
 - ✅ Unfinished-walk card on Today and Record, with distance, duration and paused state.
 - ✅ Save failure message says the walk is safe and paused.
 
@@ -129,7 +130,7 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 - ✅ Clickable `div` cards (route cards in `Routes.tsx`, goal cards in `Progress.tsx`) should be `<button>` elements. Also added a global `:focus-visible` ring.
 - ✅ `Switch` without `label` in Settings and Routes: associate the visible text.
 - ✅ `Segmented` uses `role="tab"` without tab panels: use `radiogroup`/`radio` or `aria-pressed`. `StylePicker` swatches need `aria-pressed`.
-- ⬜ Screen-reader announcement every km while recording.
+- ✅ Screen-reader announcement every km (or mile) while recording.
 
 ---
 
@@ -140,7 +141,7 @@ Next suggested order (all ⬜ items above):
 1. ~~M2 default map style, M4 Routes deps, M3 debounce.~~ Done.
 2. ~~Accessibility batch (viewport, contrast, Sheet focus, buttons, labels).~~ Done; km announcements still open.
 3. ~~M8 demo exclusion + "Remove demo walks"; M9 privacy note; M10 CI branch gating.~~ Done.
-4. Recording UX: GPS-denied card, hold-to-finish, recording pill, route remaining / off-route.
+4. ~~Recording UX: GPS-denied card, hold-to-finish, recording pill, route remaining / off-route.~~ Done (Discard Undo toast still partial).
 5. M7 import validation; M6 precaching service worker.
 6. T6 ESLint; T5 diagnostics log; T7 Mediabunny migration.
 7. Studio sticky export bar and remaining polish.
@@ -162,6 +163,8 @@ Next suggested order (all ⬜ items above):
 
 - Round 2 browser smoke test (headless Chromium): default map adopted on Routes, `Segmented` exposes radios, switches are labelled, `Sheet` takes, traps and returns focus, demo walks stand in then are removed by "Remove demo walks", zoom allowed, no page errors. The full `npm run e2e` was not re-run (the video export takes ~1 h here); its selectors were updated for `role="radio"` and its PR check now expects the simulated walk to be excluded.
 
+- Round 2 recording smoke test (headless Chromium): denied-location card with Try again; signal meter; following a planned route shows "to go" and an "Off route" warning after moving 300 m away; a tap on Finish only hints, a 1 s hold opens it; the recording pill shows on History and leads back to Record; Discard needs two taps. The e2e `finishWalk` now opens Finish with the keyboard.
+
 ### Needs a real device
 1. Native share-sheet save of backup, GPX and MP4 on Android and iOS, including the chunked `appendFile` writes on Android.
 2. Android background tracking over 30+ minutes with the screen off (Doze, aggressive vendor ROMs). This may need a battery-optimisation prompt.
@@ -170,6 +173,7 @@ Next suggested order (all ⬜ items above):
 5. Wake lock during a long 1080p export.
 6. Finishing a walk offline (airplane mode): saves quickly; elevation fills in later when online.
 7. Safari on iOS without home-screen install: storage protection status.
+8. Hold-to-finish with a gloved or wet finger, and the off-route vibration, on a real walk. Check that 40 m is a sensible off-route threshold in town.
 
 ### Assumptions
 - `android/` and `ios/` are generated by `scripts/mobile.mjs`, so the plugin's merged manifest wasn't inspected. The review assumes it declares `foregroundServiceType="location"`.
