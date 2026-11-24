@@ -1,4 +1,4 @@
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useState } from 'react';
 import { db } from '../db/db';
@@ -8,7 +8,8 @@ import { useActivities, useSettings, useToast, Stat } from '../components/ui';
 import { goalProgress, dayStreak, weekStreak, periodStart, metricValue } from '../lib/records';
 import { fmtDate, fmtDistance, fmtDuration, fmtDurationShort, fmtPace, fmtElevation, distanceUnit, fmtNumber } from '../lib/format';
 import { seedDemoData } from '../lib/activityBuilder';
-import { recorder, useRecorder } from '../tracking/recorder';
+import { useRecorder } from '../tracking/recorder';
+import { DraftCard } from '../components/DraftCard';
 import type { Activity, Goal } from '../types';
 import { goalLabel, fmtGoalValue } from './Progress';
 
@@ -44,7 +45,6 @@ export function HomePage() {
   const goals = useLiveQuery(() => db.goals.toArray(), []);
   const draft = useLiveQuery(() => db.drafts.get('draft'), []);
   const rec = useRecorder();
-  const nav = useNavigate();
   const toast = useToast();
   const [seeding, setSeeding] = useState(false);
 
@@ -80,17 +80,7 @@ export function HomePage() {
       </div>
 
       <div className="stack-lg">
-        {draft && rec.status === 'idle' && (
-          <div className="card stack">
-            <strong>Unfinished walk found</strong>
-            <span className="muted small">A recording from {fmtDate(draft.startedAt)} {new Date(draft.startedAt).toLocaleTimeString()} was interrupted ({draft.points.length} points).</span>
-            <div className="row wrap">
-              {draft.source !== 'simulated' && <button className="btn primary sm" onClick={async () => { await recorder.resumeDraft(draft); nav('/record'); }}>Resume</button>}
-              <button className="btn sm" onClick={async () => { const id = await recorder.saveDraftAsActivity(draft); if (id) nav(`/activity/${id}`); else toast('Too short to save'); }}>Save as is</button>
-              <button className="btn ghost sm" onClick={() => db.drafts.delete('draft')}>Discard</button>
-            </div>
-          </div>
-        )}
+        {draft && rec.status === 'idle' && <DraftCard draft={draft} />}
 
         <div className="hero-card">
           <div className="row" style={{ gap: 18 }}>

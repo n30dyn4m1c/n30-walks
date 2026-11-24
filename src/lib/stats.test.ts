@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bestEffort, computeStats, elevationGainLoss, walkingMet } from './stats';
+import { bestEffort, computeStats, elevationGainLoss, segmentContribution, trackTotals, walkingMet } from './stats';
 import type { TrackPoint } from '../types';
 
 /** Straight walk north at constant speed, one point per `dt` seconds. */
@@ -59,5 +59,46 @@ describe('stats', () => {
 
   it('MET rises with speed', () => {
     expect(walkingMet(1.0)).toBeLessThan(walkingMet(1.5));
+  });
+
+  it('a GPS signal gap never yields an impossible best effort or pace', () => {
+    // 400 m walk, 5 min with no fixes (screen locked) walking 420 m, 400 m walk — all at 1.4 m/s.
+    const a = walk(400, 1.4);
+    const last = a[a.length - 1];
+    const b = walk(400, 1.4).map((p) => ({ ...p, lat: p.lat + 820 / 111195, t: p.t + last.t + 300_000 }));
+    const s = computeStats([...a, ...b], { weightKg: 70, strideM: 0.75 });
+    expect(s.distanceM).toBeCloseTo(1220, -1);
+    // True pace is ~714 s/km. Before the fix: 1 km "in" ~414 s, average ~470 s/km.
+    expect(s.avgPaceSPerKm).toBeGreaterThan(690);
+    expect(s.bestEfforts['1000']).toBeGreaterThan(690);
+    for (const sp of s.splits) expect(sp.durationS).toBeGreaterThan(0);
+  });
+
+  it('a long stop with little movement credits only a small moving time', () => {
+    const p0 = { lat: 46, lon: 8, t: 0 };
+    const p1 = { lat: 46 + 30 / 111195, lon: 8, t: 20 * 60_000 }; // 30 m in 20 min
+    const c = segmentContribution(p0, p1, []);
+    expect(c.d).toBeCloseTo(30, 0);
+    expect(c.moving).toBeCloseTo(100, 0); // 30 m at 0.3 m/s, not 1200 s
+  });
+
+  it('clips pauses to the track (finishing while paused)', () => {
+    const a = walk(1000, 1.25);
+    const last = a[a.length - 1].t;
+    const s = computeStats(a, { weightKg: 70, strideM: 0.75, pauses: [[last, last + 600_000]] });
+    expect(s.elapsedS).toBeCloseTo(800, -1);
+    expect(s.elapsedS).toBeGreaterThanOrEqual(s.movingS);
+  });
+
+  it('trackTotals matches computeStats (live and saved stats agree)', () => {
+    const a = walk(1000, 1.25);
+    const gapStart = a[a.length - 1].t;
+    const b = walk(500, 1.25).map((p) => ({ ...p, lat: p.lat + 1200 / 111195, t: p.t + gapStart + 120_000 }));
+    const pts = [...a, ...b];
+    const pauses: [number, number][] = [[gapStart + 1000, gapStart + 119_000]];
+    const s = computeStats(pts, { weightKg: 70, strideM: 0.75, pauses });
+    const t = trackTotals(pts, pauses);
+    expect(t.distanceM).toBeCloseTo(s.distanceM, 6);
+    expect(t.movingS).toBeCloseTo(s.movingS, 6);
   });
 });

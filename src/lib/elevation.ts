@@ -28,15 +28,19 @@ export function decodeTerrarium(r: number, g: number, b: number): number {
 }
 
 const tileCache = new Map<string, Promise<Float32Array | null>>();
+/** A slow tile must not hold up saving a walk: give up and fall back to GPS altitude. */
+const TILE_TIMEOUT_MS = 8000;
 
 async function loadTile(z: number, x: number, y: number): Promise<Float32Array | null> {
   const key = `${z}/${x}/${y}`;
   let p = tileCache.get(key);
   if (!p) {
     p = (async () => {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), TILE_TIMEOUT_MS);
       try {
         const url = TERRARIUM_URL.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y));
-        const res = await fetch(url, { mode: 'cors' });
+        const res = await fetch(url, { mode: 'cors', signal: ctl.signal });
         if (!res.ok) return null;
         const bmp = await createImageBitmap(await res.blob());
         const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(TILE, TILE) : Object.assign(document.createElement('canvas'), { width: TILE, height: TILE });
@@ -48,8 +52,12 @@ async function loadTile(z: number, x: number, y: number): Promise<Float32Array |
         return out;
       } catch {
         return null;
+      } finally {
+        clearTimeout(timer);
       }
     })();
+    // Don't remember failures: a tile that failed offline should be retried later.
+    p.then((t) => { if (!t && tileCache.get(key) === p) tileCache.delete(key); });
     tileCache.set(key, p);
     if (tileCache.size > 200) tileCache.delete(tileCache.keys().next().value!);
   }

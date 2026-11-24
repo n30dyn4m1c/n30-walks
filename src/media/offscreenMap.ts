@@ -33,7 +33,7 @@ export async function createOffscreenMap(styleId: MapStyleId, outW: number, opts
     maxPitch: 85,
     canvasContextAttributes: { preserveDrawingBuffer: true, antialias: true },
   });
-  await new Promise<void>((resolve, reject) => {
+  const ready = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Map style took too long to load. Check your connection or pick the Relief style.')), 20000);
     map.once('style.load', () => { clearTimeout(timer); resolve(); });
     map.on('error', (e) => {
@@ -45,6 +45,14 @@ export async function createOffscreenMap(styleId: MapStyleId, outW: number, opts
       console.warn('[offscreen map]', e.error?.message ?? e);
     });
   });
+  try {
+    await ready;
+  } catch (e) {
+    // Free the WebGL context: browsers allow only ~16, and each failed export would leak one.
+    map.remove();
+    el.remove();
+    throw e;
+  }
   applyTerrain(map, styleIdUsed, opts);
   return {
     map,

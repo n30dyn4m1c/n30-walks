@@ -4,10 +4,10 @@
  */
 import type { Activity, ActivitySource, Settings, Track, TrackPoint } from '../types';
 import { bbox, simplifyToCount } from './geo';
-import { computeStats, toLngLat } from './stats';
+import { computeStats, toLngLat, STATS_VERSION } from './stats';
 import { sampleElevations } from './elevation';
 import { defaultWalkName, uid, M_PER_MI } from './format';
-import { saveActivity } from '../db/db';
+import { db, getSettings, saveActivity, updateSettings } from '../db/db';
 import { proceduralLoop, timedWalk, DEMO_START } from './demo';
 import { destination } from './geo';
 import { GpsFilter } from './gpsFilter';
@@ -26,6 +26,8 @@ export interface BuildOptions {
   name?: string;
   routeId?: string;
   id?: string;
+  /** Delete the recording draft in the same transaction as the save. */
+  clearDraft?: boolean;
 }
 
 export async function buildAndSaveActivity(rawPoints: TrackPoint[], opts: BuildOptions): Promise<Activity> {
@@ -55,18 +57,74 @@ export async function buildAndSaveActivity(rawPoints: TrackPoint[], opts: BuildO
     updatedAt: now,
   };
   const track: Track = { activityId: activity.id, points, pauses: opts.pauses ?? [] };
-  await saveActivity(activity, track);
+  await saveActivity(activity, track, { clearDraft: opts.clearDraft });
   return activity;
 }
 
 /** Recompute stats (e.g. after units/weight change) from the stored track. */
-export function recomputeStats(activity: Activity, track: Track, settings: Settings): Activity {
+export function recomputeStats(activity: Activity, track: Track, settings: Settings, elevationSource?: 'dem'): Activity {
   const stats = computeStats(track.points, {
     weightKg: settings.weightKg, strideM: settings.strideM, pauses: track.pauses,
-    elevationSource: activity.stats.elevationSource === 'dem' ? 'dem' : undefined,
+    elevationSource: elevationSource ?? (activity.stats.elevationSource === 'dem' ? 'dem' : undefined),
     splitM: settings.units === 'imperial' ? M_PER_MI : 1000,
   });
-  return { ...activity, stats, updatedAt: Date.now() };
+  return { ...activity, stats, type: stats.elevGainM > 150 ? 'hike' : activity.type, updatedAt: Date.now() };
+}
+
+/** Recompute every stored activity in one transaction (units/weight change, algorithm update). */
+export async function recomputeAllActivities(settings?: Settings): Promise<number> {
+  const s = settings ?? (await getSettings());
+  return db.transaction('rw', db.activities, db.tracks, async () => {
+    const [acts, tracks] = await Promise.all([db.activities.toArray(), db.tracks.toArray()]);
+    const byId = new Map(tracks.map((t) => [t.activityId, t]));
+    const next = acts.flatMap((a) => { const t = byId.get(a.id); return t ? [recomputeStats(a, t, s)] : []; });
+    await db.activities.bulkPut(next);
+    return next.length;
+  });
+}
+
+/**
+ * Stored stats are derived data. When the algorithm changes (STATS_VERSION),
+ * recompute them once so old walks pick up fixes — e.g. impossible best
+ * efforts from GPS gaps disappear from personal records.
+ */
+export async function migrateStats(): Promise<void> {
+  const settings = await getSettings();
+  if ((settings.statsVersion ?? 1) >= STATS_VERSION) return;
+  await recomputeAllActivities(settings);
+  await updateSettings({ statsVersion: STATS_VERSION });
+}
+
+const enriching = new Set<string>();
+
+/**
+ * Walks are saved straight away even if the terrain model can't be reached
+ * (offline at the end of a hike). This fills in DEM elevation afterwards and
+ * recomputes the stats so elevation gain, profile and splits stay consistent.
+ * Returns true if the activity was updated.
+ */
+export async function enrichElevation(activityId: string): Promise<boolean> {
+  if (enriching.has(activityId)) return false;
+  enriching.add(activityId);
+  try {
+    const [activity, track] = await Promise.all([db.activities.get(activityId), db.tracks.get(activityId)]);
+    if (!activity || !track || activity.stats.elevationSource === 'dem' || track.points.length < 2) return false;
+    const r = await withDemElevation(track.points);
+    if (r.source !== 'dem') return false;
+    const settings = await getSettings();
+    const nextTrack: Track = { ...track, points: r.points };
+    const next = recomputeStats(activity, nextTrack, settings, 'dem');
+    await db.transaction('rw', db.activities, db.tracks, async () => {
+      // Don't clobber edits (name, notes) made while we were fetching tiles.
+      const cur = await db.activities.get(activityId);
+      if (!cur) return;
+      await db.tracks.put(nextTrack);
+      await db.activities.put({ ...cur, stats: next.stats, type: next.type, updatedAt: Date.now() });
+    });
+    return true;
+  } finally {
+    enriching.delete(activityId);
+  }
 }
 
 /**

@@ -14,8 +14,8 @@
 import { useSyncExternalStore } from 'react';
 import { GpsFilter, type RawFix } from '../lib/gpsFilter';
 import { haversine, type LngLat } from '../lib/geo';
-import { MAX_GAP_S, MOVING_SPEED_MPS } from '../lib/stats';
-import { db, getSettings } from '../db/db';
+import { segmentContribution, trackTotals } from '../lib/stats';
+import { db, getSettings, requestPersistentStorage } from '../db/db';
 import { buildAndSaveActivity } from '../lib/activityBuilder';
 import type { ActivitySource, RecordingDraft, TrackPoint } from '../types';
 import { createRealProvider, SimulatedProvider, type LocationProvider, type ProviderError } from './providers';
@@ -40,12 +40,16 @@ export interface RecorderState {
   routeId?: string;
   rejected: number;
   autoPaused: boolean;
+  /** The last draft write failed (e.g. storage full): crash recovery isn't protecting this walk. */
+  draftError: boolean;
 }
 
 const initial: RecorderState = {
   status: 'idle', source: 'gps', startedAt: null, points: [], pauses: [], pausedAt: null,
-  lastFix: null, distanceM: 0, movingS: 0, currentPace: 0, now: Date.now(), error: null, rejected: 0, autoPaused: false,
+  lastFix: null, distanceM: 0, movingS: 0, currentPace: 0, now: Date.now(), error: null, rejected: 0, autoPaused: false, draftError: false,
 };
+
+export const UNFINISHED_DRAFT_MESSAGE = 'An unfinished walk is waiting. Resume, save or discard it first.';
 
 class Recorder {
   private state: RecorderState = initial;
@@ -55,6 +59,8 @@ class Recorder {
   private ticker: ReturnType<typeof setInterval> | null = null;
   private lastDraftSave = 0;
   private wakeLock: WakeLockSentinel | null = null;
+  /** Bumped by every acquire/stop so a slow, superseded acquire() can't leave a GPS watcher running. */
+  private generation = 0;
 
   getState = () => this.state;
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => this.listeners.delete(fn); };
@@ -69,18 +75,28 @@ class Recorder {
 
   /** Start the GPS (without recording) so the user sees their position & signal first. */
   async acquire(opts: { simulatePath?: LngLat[]; speedup?: number; routeId?: string } = {}) {
-    await this.stopProvider();
+    // Take a token BEFORE awaiting anything: any later acquire/stop supersedes this one.
+    const gen = ++this.generation;
+    await this.teardownProvider();
     const settings = await getSettings();
+    if (gen !== this.generation) return; // superseded while loading settings
     this.filter = new GpsFilter({ maxAccuracyM: settings.maxAccuracyM });
-    this.provider = opts.simulatePath ? new SimulatedProvider(opts.simulatePath, opts.speedup ?? 10) : createRealProvider();
-    if (this.provider instanceof SimulatedProvider) this.provider.holdPosition = true;
-    this.set({ ...initial, status: 'acquiring', source: opts.simulatePath ? 'simulated' : 'gps', routeId: opts.routeId, now: this.provider.now() });
-    await this.provider.start(this.onFix, (error) => this.set({ error }));
+    const provider = opts.simulatePath ? new SimulatedProvider(opts.simulatePath, opts.speedup ?? 10) : createRealProvider();
+    this.provider = provider;
+    if (provider instanceof SimulatedProvider) provider.holdPosition = true;
+    this.set({ ...initial, status: 'acquiring', source: opts.simulatePath ? 'simulated' : 'gps', routeId: opts.routeId, now: provider.now() });
+    await provider.start(this.onFix, (error) => { if (this.provider === provider) this.set({ error }); });
+    if (gen !== this.generation || this.provider !== provider) { await provider.stop(); return; }
     this.startTicker();
   }
 
   async start(opts: { routeId?: string } = {}) {
+    if (this.state.status === 'recording' || this.state.status === 'paused' || this.state.status === 'saving') return;
+    // Never overwrite an interrupted walk's draft by starting a new one.
+    if (await db.drafts.get('draft')) throw new Error(UNFINISHED_DRAFT_MESSAGE);
     if (!this.provider) await this.acquire(opts);
+    // Re-check after awaiting: a second tap on Start may have got here first.
+    if (!this.provider || this.state.status !== 'acquiring') return;
     const now = this.provider!.now();
     if (this.simulated) this.simulated.holdPosition = false;
     this.filter.reset(false);
@@ -108,21 +124,37 @@ class Recorder {
     this.saveDraft(true);
   }
 
-  /** Finish and persist. Returns the new activity id, or null if too short. */
+  /**
+   * Finish and persist. Returns the new activity id, or null if too short.
+   * If saving fails, nothing is lost: the walk stays paused (GPS still on, draft
+   * still stored) so the user can retry or keep walking, and the error is thrown.
+   */
   async finish(): Promise<string | null> {
     const s = this.state;
+    if (s.status !== 'recording' && s.status !== 'paused') return null;
     const now = this.provider?.now() ?? Date.now();
-    const pauses = s.pausedAt != null ? [...s.pauses, [s.pausedAt, now] as [number, number]] : s.pauses;
+    const pausedAt = s.pausedAt ?? now;
+    const pauses = [...s.pauses, [pausedAt, now] as [number, number]];
     this.set({ status: 'saving' });
-    await this.stopProvider();
-    try {
-      if (s.points.length < 2) return null;
-      const settings = await getSettings();
-      const a = await buildAndSaveActivity(s.points, { settings, source: s.source, pauses, routeId: s.routeId });
-      return a.id;
-    } finally {
+    if (s.points.length < 2) {
+      await this.stopProvider();
       await db.drafts.delete('draft');
       this.set({ ...initial });
+      return null;
+    }
+    try {
+      const settings = await getSettings();
+      // The draft is deleted in the same transaction as the save — never before it.
+      const a = await buildAndSaveActivity(s.points, { settings, source: s.source, pauses, routeId: s.routeId, clearDraft: true });
+      await this.stopProvider();
+      this.set({ ...initial });
+      void requestPersistentStorage();
+      return a.id;
+    } catch (e) {
+      if (this.simulated) this.simulated.holdPosition = true;
+      this.set({ status: 'paused', pausedAt });
+      await this.saveDraft(true);
+      throw e;
     }
   }
 
@@ -134,25 +166,41 @@ class Recorder {
 
   /** Stop GPS without recording (e.g. leaving the record screen while acquiring). */
   async cancelAcquire() {
-    if (this.state.status === 'acquiring') { await this.stopProvider(); this.set({ ...initial }); }
+    const st = this.state.status;
+    // 'idle' too: an acquire() may still be loading settings; stopping bumps the generation so it bails.
+    if (st === 'acquiring' || st === 'idle') { await this.stopProvider(); if (this.state.status === st) this.set({ ...initial }); }
   }
 
   /** Resume an interrupted recording from the persisted draft (real GPS only). */
   async resumeDraft(draft: RecordingDraft) {
     await this.acquire({ routeId: draft.routeId });
-    const distance = draft.points.reduce((acc, p, i) => (i ? acc + haversine([draft.points[i - 1].lon, draft.points[i - 1].lat], [p.lon, p.lat]) : 0), 0);
-    // The gap while the app was dead is recorded as a pause.
-    const last = draft.points[draft.points.length - 1]?.t ?? draft.updatedAt;
-    const pauses: [number, number][] = [...draft.pauses, [last, Date.now()]];
-    this.set({ status: 'recording', startedAt: draft.startedAt, points: draft.points, pauses, distanceM: distance, source: draft.source === 'simulated' ? 'gps' : draft.source });
+    const now = Date.now();
+    const source = draft.source === 'simulated' ? 'gps' : draft.source;
+    const base = { startedAt: draft.startedAt, points: draft.points, source, error: null };
+    if (draft.pausedAt != null) {
+      // It was paused when the app died: come back paused.
+      const t = trackTotals(draft.points, draft.pauses);
+      this.set({ ...base, status: 'paused', pauses: draft.pauses, pausedAt: draft.pausedAt, distanceM: t.distanceM, movingS: t.movingS });
+    } else {
+      // The time the app was dead is recorded as a pause (we don't know where the walker went).
+      const last = draft.points[draft.points.length - 1]?.t ?? draft.updatedAt;
+      const pauses: [number, number][] = [...draft.pauses, [last, now]];
+      const t = trackTotals(draft.points, pauses);
+      this.set({ ...base, status: 'recording', pauses, pausedAt: null, distanceM: t.distanceM, movingS: t.movingS });
+    }
+    this.set({ currentPace: this.recentPace(draft.points) });
     this.requestWakeLock();
+    await this.saveDraft(true);
   }
 
+  /** Save an interrupted recording as it is. The draft is only removed once the walk is saved. */
   async saveDraftAsActivity(draft: RecordingDraft): Promise<string | null> {
-    await db.drafts.delete('draft');
-    if (draft.points.length < 2) return null;
+    if (draft.points.length < 2) { await db.drafts.delete('draft'); return null; }
     const settings = await getSettings();
-    const a = await buildAndSaveActivity(draft.points, { settings, source: draft.source, pauses: draft.pauses, routeId: draft.routeId });
+    const end = draft.points[draft.points.length - 1].t;
+    const pauses: [number, number][] = draft.pausedAt != null ? [...draft.pauses, [draft.pausedAt, Math.max(end, draft.pausedAt)]] : draft.pauses;
+    const a = await buildAndSaveActivity(draft.points, { settings, source: draft.source, pauses, routeId: draft.routeId, clearDraft: true });
+    void requestPersistentStorage();
     return a.id;
   }
 
@@ -168,10 +216,10 @@ class Recorder {
         const prev = s.points[s.points.length - 1];
         let { distanceM, movingS } = s;
         if (prev) {
-          const d = haversine([prev.lon, prev.lat], [res.point.lon, res.point.lat]);
-          const dt = (res.point.t - prev.t) / 1000;
-          distanceM += d;
-          if (dt > 0 && dt <= MAX_GAP_S && d / dt >= MOVING_SPEED_MPS) movingS += dt;
+          // Same rule as the saved stats (pauses, gaps), so live == saved.
+          const c = segmentContribution(prev, res.point, s.pauses);
+          distanceM += c.d;
+          movingS += c.moving;
         }
         Object.assign(patch, { points: pts, distanceM, movingS, currentPace: this.recentPace(pts) });
       } else if (res.reason !== 'stationary') {
@@ -204,12 +252,20 @@ class Recorder {
     }, 250);
   }
 
+  /** Stop GPS and cancel any acquire() still in flight. */
   private async stopProvider() {
+    this.generation++;
+    await this.teardownProvider();
+  }
+
+  private async teardownProvider() {
     if (this.ticker) clearInterval(this.ticker);
     this.ticker = null;
-    await this.provider?.stop();
+    // Detach first so a provider created while we await stop() is never nulled out.
+    const p = this.provider;
     this.provider = null;
     this.releaseWakeLock();
+    await p?.stop();
   }
 
   private async saveDraft(force = false) {
@@ -222,13 +278,20 @@ class Recorder {
       id: 'draft', startedAt: s.startedAt ?? now, points: s.points, pauses: s.pauses, pausedAt: s.pausedAt,
       source: s.source, routeId: s.routeId, updatedAt: now,
     };
-    await db.drafts.put(draft);
+    try {
+      await db.drafts.put(draft);
+      if (this.state.draftError) this.set({ draftError: false });
+    } catch (e) {
+      console.warn('[recorder] draft save failed', e);
+      if (!this.state.draftError) this.set({ draftError: true });
+    }
   }
 
   private async requestWakeLock() {
     try {
       const settings = await getSettings();
       if (!settings.keepScreenOn || !('wakeLock' in navigator)) return;
+      if (this.wakeLock && !this.wakeLock.released) return;
       this.wakeLock = await navigator.wakeLock.request('screen');
     } catch { /* not fatal: user may have battery saver on */ }
   }

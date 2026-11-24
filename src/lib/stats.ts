@@ -16,10 +16,56 @@ export function toLngLat(points: TrackPoint[]): LngLat[] {
   return points.map((p) => [p.lon, p.lat]);
 }
 
+/**
+ * Bump when the stats algorithm changes in a way that alters stored results;
+ * saved activities are recomputed on next launch (see migrateStats).
+ * v2: signal gaps no longer add distance without time (fake best efforts).
+ */
+export const STATS_VERSION = 2;
+
 /** Whether the segment (a, b] overlaps any manual pause interval. */
-function overlapsPause(a: number, b: number, pauses: [number, number][]): boolean {
+export function overlapsPause(a: number, b: number, pauses: [number, number][]): boolean {
   for (const [s, e] of pauses) if (a < e && b > s) return true;
   return false;
+}
+
+/**
+ * How one track segment contributes to distance and moving time. Shared by the
+ * live recorder and computeStats so the numbers on screen while walking are
+ * exactly the numbers that get saved.
+ *
+ *  - Segments overlapping a manual pause count for nothing.
+ *  - Normal segments count their distance; their time counts as moving when
+ *    the walker was moving (speed >= MOVING_SPEED_MPS).
+ *  - Signal gaps (dt > MAX_GAP_S: tunnel, screen locked on the web) count
+ *    their distance, but we don't know how long the walker actually moved,
+ *    so we credit at most the time it would take at the slowest "moving"
+ *    speed. Without this a gap added distance with zero time, producing
+ *    impossible best efforts and paces.
+ */
+export function segmentContribution(a: TrackPoint, b: TrackPoint, pauses: [number, number][]): { d: number; moving: number } {
+  if (overlapsPause(a.t, b.t, pauses)) return { d: 0, moving: 0 };
+  const d = haversine([a.lon, a.lat], [b.lon, b.lat]);
+  const dt = (b.t - a.t) / 1000;
+  if (dt <= 0) return { d, moving: 0 };
+  if (dt > MAX_GAP_S) return { d, moving: Math.min(dt, d / MOVING_SPEED_MPS) };
+  return { d, moving: d / dt >= MOVING_SPEED_MPS ? dt : 0 };
+}
+
+/** Distance and moving time of a whole track (used to restore a recovered draft). */
+export function trackTotals(points: TrackPoint[], pauses: [number, number][]): { distanceM: number; movingS: number } {
+  let distanceM = 0, movingS = 0;
+  for (let i = 1; i < points.length; i++) {
+    const c = segmentContribution(points[i - 1], points[i], pauses);
+    distanceM += c.d;
+    movingS += c.moving;
+  }
+  return { distanceM, movingS };
+}
+
+/** Total paused time (ms) that falls inside [from, to]. */
+export function pausedWithin(pauses: [number, number][], from: number, to: number): number {
+  return pauses.reduce((s, [a, b]) => s + Math.max(0, Math.min(b, to) - Math.max(a, from)), 0);
 }
 
 /**
@@ -112,19 +158,16 @@ export function computeStats(points: TrackPoint[], opts: StatsOptions): Activity
   const cum: number[] = [0];
   const movT: number[] = [0];
   for (let i = 1; i < n; i++) {
-    const a = points[i - 1], b = points[i];
-    const d = haversine([a.lon, a.lat], [b.lon, b.lat]);
-    const dt = (b.t - a.t) / 1000;
-    const paused = overlapsPause(a.t, b.t, pauses);
-    if (!paused) distance += d;
-    const isMoving = !paused && dt > 0 && dt <= MAX_GAP_S && d / dt >= MOVING_SPEED_MPS;
-    if (isMoving) moving += dt;
+    const c = segmentContribution(points[i - 1], points[i], pauses);
+    distance += c.d;
+    moving += c.moving;
     cum.push(distance);
     movT.push(moving);
   }
 
-  // Manual pauses are excluded from elapsed time; only the recorder's wall time between them counts.
-  const pausedMs = pauses.reduce((s, [a, b]) => s + Math.max(0, b - a), 0);
+  // Manual pauses are excluded from elapsed time. Only the part of each pause inside the
+  // track counts (a walk finished while paused has a pause running past the last point).
+  const pausedMs = pausedWithin(pauses, points[0].t, points[n - 1].t);
   const elapsed = Math.max(0, (points[n - 1].t - points[0].t - pausedMs) / 1000);
 
   // Elevation
@@ -144,7 +187,8 @@ export function computeStats(points: TrackPoint[], opts: StatsOptions): Activity
   const splits: Split[] = [];
   let splitStartIdx = 0;
   let nextBoundary = splitM;
-  const eleAt = (i: number) => points[i].ele ?? 0;
+  const eleAt = (i: number) => points[i].ele ?? NaN;
+  const eleDelta = (i: number, j: number) => { const v = eleAt(i) - eleAt(j); return isFinite(v) ? v : 0; };
   for (let i = 1; i < n; i++) {
     while (cum[i] >= nextBoundary) {
       const f = (nextBoundary - cum[i - 1]) / Math.max(1e-9, cum[i] - cum[i - 1]);
@@ -153,7 +197,7 @@ export function computeStats(points: TrackPoint[], opts: StatsOptions): Activity
       const dur = tAt - prevT;
       splits.push({
         index: splits.length + 1, distanceM: splitM, durationS: dur,
-        paceSPerKm: dur / (splitM / 1000), elevDeltaM: eleAt(i) - eleAt(splitStartIdx),
+        paceSPerKm: dur / (splitM / 1000), elevDeltaM: eleDelta(i, splitStartIdx),
       });
       splitStartIdx = i;
       nextBoundary += splitM;
@@ -163,7 +207,7 @@ export function computeStats(points: TrackPoint[], opts: StatsOptions): Activity
   const remD = distance - splits.length * splitM;
   if (remD > splitM * 0.05) {
     const dur = moving - usedT;
-    splits.push({ index: splits.length + 1, distanceM: remD, durationS: dur, paceSPerKm: dur / (remD / 1000), elevDeltaM: eleAt(n - 1) - eleAt(splitStartIdx) });
+    splits.push({ index: splits.length + 1, distanceM: remD, durationS: dur, paceSPerKm: dur / (remD / 1000), elevDeltaM: eleDelta(n - 1, splitStartIdx) });
   }
 
   const bestEfforts: Record<string, number> = {};
