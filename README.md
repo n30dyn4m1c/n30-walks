@@ -134,6 +134,13 @@ npm run e2e          # after build: headless end-to-end run, artifacts in e2e-ou
 
 **Native Android:** run `npm run mobile:android`. This builds, creates `android/` on first run, adds the location, foreground-service and notification permissions, syncs, and opens Android Studio. Press ▶ to run on a device.
 
+**APK from CI:** every push to the default branch publishes `Stride.apk` on the `apk-latest` release. For a new APK to install over the old one (keeping your walks), every build must be signed with the same key. Add two repository secrets under Settings → Secrets and variables → Actions:
+
+- `ANDROID_KEYSTORE_BASE64`: the keystore file, base64-encoded (`base64 -w0 stride.keystore`)
+- `ANDROID_KEYSTORE_PASSWORD`: its password
+
+Optionally add `ANDROID_KEY_ALIAS` (default `stride`) and `ANDROID_KEY_PASSWORD` (default: the keystore password). To make a key, run `keytool -genkeypair -keystore stride.keystore -storetype PKCS12 -alias stride -keyalg RSA -keysize 4096 -validity 36500 -dname CN=Stride`. Keep a copy of it: if you lose it, the next update needs an uninstall. Without these secrets, CI signs each build with a new throwaway key and Android refuses the update.
+
 **Native iOS (macOS):** run `npm run mobile:ios`. It adds the location usage strings and the `location` background mode, then opens Xcode. Set your signing team and run.
 
 Use `--no-open` (for example `node scripts/mobile.mjs android --no-open`) to skip opening the IDE.

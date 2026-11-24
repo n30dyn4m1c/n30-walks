@@ -2,9 +2,10 @@
 # workflow artifact; only builds of the default branch are published as the
 # "apk-latest" pre-release, so it can be downloaded straight to a phone.
 #
-# Signing: if the repo secrets ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD /
-# ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD are set, the APK is signed with that
-# key, so each new build installs over the previous one and keeps your walks.
+# Signing: if the repo secrets ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD
+# are set, the APK is signed with that key, so each new build installs over the
+# previous one and keeps your walks. ANDROID_KEY_ALIAS (default "stride") and
+# ANDROID_KEY_PASSWORD (default: the keystore password) are optional.
 # Without them, Gradle's throwaway debug key is used: fine for a first test, but
 # every build then has a different key and Android makes you uninstall first.
 name: Android APK
@@ -68,8 +69,8 @@ jobs:
         working-directory: android
         env:
           STRIDE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          STRIDE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          STRIDE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STRIDE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'stride' }}
+          STRIDE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           VERSION_CODE=${{ github.run_number }}
           ARGS="-PversionCode=$VERSION_CODE"
