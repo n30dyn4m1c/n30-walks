@@ -67,15 +67,50 @@ export async function getSettings(): Promise<Settings> {
 }
 
 export async function updateSettings(patch: Partial<Settings>): Promise<void> {
-  const cur = await getSettings();
-  await db.settings.put({ ...cur, ...patch, id: 'settings' });
+  // One transaction so two quick updates can't read the same old value and overwrite each other.
+  await db.transaction('rw', db.settings, async () => {
+    const cur = await getSettings();
+    await db.settings.put({ ...cur, ...patch, id: 'settings' });
+  });
 }
 
-export async function saveActivity(activity: Activity, track: Track): Promise<void> {
-  await db.transaction('rw', db.activities, db.tracks, async () => {
+/**
+ * Save an activity and its track. With `clearDraft`, the crash-recovery draft is
+ * deleted in the SAME transaction: either the walk is saved and the draft is
+ * gone, or nothing changed and the draft is still there to retry from.
+ */
+export async function saveActivity(activity: Activity, track: Track, opts: { clearDraft?: boolean } = {}): Promise<void> {
+  await db.transaction('rw', [db.activities, db.tracks, db.drafts], async () => {
     await db.activities.put(activity);
     await db.tracks.put(track);
+    if (opts.clearDraft) await db.drafts.delete('draft');
   });
+}
+
+export type StorageProtection = 'persistent' | 'best-effort' | 'unknown';
+
+/**
+ * Ask the browser not to evict our IndexedDB under storage pressure (or, in
+ * Safari, after 7 days without a visit). All walks live only here, so this
+ * matters. Some browsers grant silently, Firefox asks the user.
+ */
+export async function requestPersistentStorage(): Promise<StorageProtection> {
+  try {
+    if (!navigator.storage?.persist) return 'unknown';
+    if (await navigator.storage.persisted()) return 'persistent';
+    return (await navigator.storage.persist()) ? 'persistent' : 'best-effort';
+  } catch {
+    return 'unknown';
+  }
+}
+
+export async function storageProtection(): Promise<StorageProtection> {
+  try {
+    if (!navigator.storage?.persisted) return 'unknown';
+    return (await navigator.storage.persisted()) ? 'persistent' : 'best-effort';
+  } catch {
+    return 'unknown';
+  }
 }
 
 export async function deleteActivity(id: string): Promise<void> {

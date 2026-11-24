@@ -17,11 +17,13 @@ import { attributionFor, drawOverlay, type OverlayData } from './overlay';
 import { createOffscreenMap, renderStats, waitForRender } from './offscreenMap';
 import type { Activity, OverlayConfig, Track, Units } from '../types';
 
-export interface ExportProgress { frame: number; frames: number; phase: 'loading' | 'rendering' | 'finalizing' }
+export interface ExportProgress { frame: number; frames: number; phase: 'loading' | 'rendering' | 'finalizing'; /** 1 normally; 2 when re-encoding a file that came out too large */ pass?: number }
 
 export const FPS = 30;
-/** Keep files under WhatsApp's ~16 MB media limit. */
+/** Target size: a margin under WhatsApp's ~16 MB media limit. */
 const MAX_BYTES = 15 * 1024 * 1024;
+/** Hard limit we check the finished file against. */
+export const WHATSAPP_LIMIT_BYTES = 16 * 1000 * 1000;
 
 const H264_CODECS = ['avc1.640034', 'avc1.64002A', 'avc1.640028', 'avc1.4D4028', 'avc1.42E01F'];
 
@@ -45,7 +47,7 @@ export function videoExportSupported(): boolean {
   return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';
 }
 
-export interface VideoResult { blob: Blob; codec: string; width: number; height: number; seconds: number; whatsappReady: boolean }
+export interface VideoResult { blob: Blob; codec: string; width: number; height: number; seconds: number; whatsappReady: boolean; /** Under WhatsApp's size limit */ fitsWhatsApp: boolean }
 
 export async function exportFlyoverVideo(
   activity: Activity, track: Track, cfg: OverlayConfig, units: Units,
@@ -54,80 +56,96 @@ export async function exportFlyoverVideo(
   const { width, height } = outputSize(cfg.quality);
   const seconds = cfg.videoSeconds;
   const frames = seconds * FPS;
-  const bitrate = Math.min(cfg.quality === '720p' ? 5_000_000 : 8_000_000, Math.floor((MAX_BYTES * 8 * 0.92) / seconds));
+  let bitrate = Math.min(cfg.quality === '720p' ? 5_000_000 : 8_000_000, Math.floor((MAX_BYTES * 8 * 0.92) / seconds));
   const picked = await pickCodec(width, height, bitrate);
   if (!picked) throw new Error('This browser cannot encode video (WebCodecs missing). Use a recent Chrome, Edge or Safari, or export a still image.');
 
   onProgress({ frame: 0, frames, phase: 'loading' });
   const plan = buildFlyoverPlan(track.points);
   const off = await createOffscreenMap(cfg.mapStyle, width, { terrain: true, exaggeration: cfg.exaggeration });
-  const scene = new FlyoverScene(off.map, plan, cfg.routeColor, cfg.exaggeration);
-  scene.install();
-
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
-
-  const target = new ArrayBufferTarget();
-  const muxer = new Muxer({ target, video: { codec: picked.muxCodec, width, height, frameRate: FPS }, fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
-  let encodeError: Error | null = null;
-  const encoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error: (e) => { encodeError = e as Error; },
-  });
-  encoder.configure(picked.config);
-
-  const s = activity.stats;
-  const base: Omit<OverlayData, 'progress' | 'live'> = {
-    title: cfg.title || activity.name, dateMs: activity.startedAt, units,
-    totals: { distanceM: s.distanceM, movingS: s.movingS, paceSPerKm: s.avgPaceSPerKm, elevGainM: s.elevGainM, steps: s.estSteps },
-    profile: plan.profile, attribution: attributionFor(off.styleId),
-  };
-
-  Object.assign(renderStats, { frames: 0, timeouts: 0, totalMs: 0 });
-  const prof = { camera: 0, wait: 0, draw: 0, overlay: 0, encode: 0 };
   try {
-    // Warm-up: load tiles for the opening shot before frame 0.
-    scene.setFrame(0);
-    await waitForRender(off.map, 15000, true);
-    for (let i = 0; i < frames; i++) {
-      if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
-      if (encodeError) throw encodeError;
-      const u = i / (frames - 1);
-      let ts = performance.now();
-      const cam = scene.setFrame(u, (i / FPS) % 1);
-      prof.camera += performance.now() - ts; ts = performance.now();
-      await waitForRender(off.map);
-      prof.wait += performance.now() - ts; ts = performance.now();
-      ctx.drawImage(off.map.getCanvas(), 0, 0, width, height);
-      prof.draw += performance.now() - ts; ts = performance.now();
-      const live = liveStatsAt(plan, cam.distance);
-      const progress = cam.distance / plan.total;
-      drawOverlay(ctx, width, height, cfg, {
-        ...base, progress,
-        // Live stats while walking; final totals once the outro starts.
-        live: u < OUTRO ? { distanceM: live.distanceM, movingS: live.movingS, eleM: live.eleM } : undefined,
-        alpha: Math.min(1, u / 0.04 + 0.15),
+    const scene = new FlyoverScene(off.map, plan, cfg.routeColor, cfg.exaggeration);
+    scene.install();
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d')!;
+    const s = activity.stats;
+    const base: Omit<OverlayData, 'progress' | 'live'> = {
+      title: cfg.title || activity.name, dateMs: activity.startedAt, units,
+      totals: { distanceM: s.distanceM, movingS: s.movingS, paceSPerKm: s.avgPaceSPerKm, elevGainM: s.elevGainM, steps: s.estSteps },
+      profile: plan.profile, attribution: attributionFor(off.styleId),
+    };
+
+    const encodePass = async (pass: number, config: VideoEncoderConfig): Promise<Blob> => {
+      const target = new ArrayBufferTarget();
+      const muxer = new Muxer({ target, video: { codec: picked.muxCodec, width, height, frameRate: FPS }, fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
+      let encodeError: Error | null = null;
+      const encoder = new VideoEncoder({
+        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+        error: (e) => { encodeError = e as Error; },
       });
-      prof.overlay += performance.now() - ts; ts = performance.now();
-      const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / FPS), duration: Math.round(1e6 / FPS) });
-      encoder.encode(frame, { keyFrame: i % (FPS * 2) === 0 });
-      frame.close();
-      // Back-pressure: don't let the encoder queue grow unbounded on slow devices.
-      while (encoder.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 5));
-      prof.encode += performance.now() - ts;
-      if (i % 30 === 29) console.info(`[export] frame ${i + 1}: avg ms ` + Object.entries(prof).map(([k, v]) => `${k}=${(v / (i + 1)).toFixed(0)}`).join(' '));
-      onProgress({ frame: i + 1, frames, phase: 'rendering' });
+      encoder.configure(config);
+      Object.assign(renderStats, { frames: 0, timeouts: 0, totalMs: 0 });
+      const prof = { camera: 0, wait: 0, draw: 0, overlay: 0, encode: 0 };
+      try {
+        // Warm-up: load tiles for the opening shot before frame 0.
+        scene.setFrame(0);
+        await waitForRender(off.map, 15000, true);
+        for (let i = 0; i < frames; i++) {
+          if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
+          if (encodeError) throw encodeError;
+          const u = i / (frames - 1);
+          let ts = performance.now();
+          const cam = scene.setFrame(u, (i / FPS) % 1);
+          prof.camera += performance.now() - ts; ts = performance.now();
+          await waitForRender(off.map);
+          prof.wait += performance.now() - ts; ts = performance.now();
+          ctx.drawImage(off.map.getCanvas(), 0, 0, width, height);
+          prof.draw += performance.now() - ts; ts = performance.now();
+          const live = liveStatsAt(plan, cam.distance);
+          const progress = cam.distance / plan.total;
+          drawOverlay(ctx, width, height, cfg, {
+            ...base, progress,
+            // Live stats while walking; final totals once the outro starts.
+            live: u < OUTRO ? { distanceM: live.distanceM, movingS: live.movingS, eleM: live.eleM } : undefined,
+            alpha: Math.min(1, u / 0.04 + 0.15),
+          });
+          prof.overlay += performance.now() - ts; ts = performance.now();
+          const frame = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / FPS), duration: Math.round(1e6 / FPS) });
+          encoder.encode(frame, { keyFrame: i % (FPS * 2) === 0 });
+          frame.close();
+          // Back-pressure: don't let the encoder queue grow unbounded on slow devices.
+          while (encoder.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 5));
+          prof.encode += performance.now() - ts;
+          if (i % 30 === 29) console.info(`[export] frame ${i + 1}: avg ms ` + Object.entries(prof).map(([k, v]) => `${k}=${(v / (i + 1)).toFixed(0)}`).join(' '));
+          onProgress({ frame: i + 1, frames, phase: 'rendering', pass });
+        }
+        console.info(`[export] ${frames} frames, avg render wait ${(renderStats.totalMs / Math.max(1, renderStats.frames)).toFixed(0)} ms, ${renderStats.timeouts} tile timeouts`);
+        onProgress({ frame: frames, frames, phase: 'finalizing', pass });
+        await encoder.flush();
+        if (encodeError) throw encodeError;
+        muxer.finalize();
+      } finally {
+        if (encoder.state !== 'closed') encoder.close();
+      }
+      return new Blob([target.buffer], { type: 'video/mp4' });
+    };
+
+    let blob = await encodePass(1, picked.config);
+    // Hardware H.264 encoders often overshoot the requested bitrate. If the file is
+    // over WhatsApp's limit, encode once more at a bitrate scaled to fit.
+    if (blob.size > WHATSAPP_LIMIT_BYTES) {
+      const scaled = Math.floor(bitrate * (MAX_BYTES / blob.size) * 0.85);
+      console.info(`[export] ${(blob.size / 1e6).toFixed(1)} MB is over the limit; re-encoding at ${(scaled / 1e6).toFixed(1)} Mbps`);
+      bitrate = scaled;
+      blob = await encodePass(2, { ...picked.config, bitrate });
     }
-    console.info(`[export] ${frames} frames, avg render wait ${(renderStats.totalMs / Math.max(1, renderStats.frames)).toFixed(0)} ms, ${renderStats.timeouts} tile timeouts`);
-    onProgress({ frame: frames, frames, phase: 'finalizing' });
-    await encoder.flush();
-    muxer.finalize();
+    return {
+      blob, codec: picked.config.codec, width, height, seconds,
+      whatsappReady: picked.muxCodec === 'avc', fitsWhatsApp: blob.size <= WHATSAPP_LIMIT_BYTES,
+    };
   } finally {
-    if (encoder.state !== 'closed') encoder.close();
     off.destroy();
   }
-  const blob = new Blob([target.buffer], { type: 'video/mp4' });
-  return { blob, codec: picked.config.codec, width, height, seconds, whatsappReady: picked.muxCodec === 'avc' };
 }

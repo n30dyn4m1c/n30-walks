@@ -4,10 +4,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import type maplibregl from 'maplibre-gl';
 import { MapView } from '../components/MapView';
+import { DraftCard } from '../components/DraftCard';
 import { Icon } from '../components/Icon';
 import { Sheet, Stat, StylePicker, Segmented, useSettings, useToast } from '../components/ui';
 import { db } from '../db/db';
-import { recorder, useRecorder, elapsedSeconds } from '../tracking/recorder';
+import { recorder, useRecorder, elapsedSeconds, UNFINISHED_DRAFT_MESSAGE } from '../tracking/recorder';
 import { isNative } from '../tracking/providers';
 import { addRouteLayers, setUserPosition, lineFeature, setData } from '../lib/mapLayers';
 import { fmtDistance, fmtDuration, fmtPace, distanceUnit, paceUnit, fmtDistance as fd } from '../lib/format';
@@ -26,6 +27,7 @@ export function RecordPage() {
   const nav = useNavigate();
   const toast = useToast();
   const routes = useLiveQuery(() => db.routes.orderBy('updatedAt').reverse().toArray(), []);
+  const draft = useLiveQuery(() => db.drafts.get('draft'), []);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [styleId, setStyleId] = useState<MapStyleId>(settings.defaultMapStyle);
   const [follow, setFollow] = useState(true);
@@ -77,7 +79,12 @@ export function RecordPage() {
     else map.easeTo({ center: here, duration: 600 });
   }, [fix?.t, follow]);
 
+  const startWalk = async () => {
+    try { await recorder.start({ routeId }); } catch (e) { toast((e as Error).message); }
+  };
+
   const startSim = async () => {
+    if (draft) { setSimOpen(false); toast(UNFINISHED_DRAFT_MESSAGE); return; }
     const speed = Number(simSpeed);
     let pathToWalk: LngLat[];
     if (plannedRoute) pathToWalk = plannedRoute.geometry;
@@ -89,7 +96,7 @@ export function RecordPage() {
     firstFix.current = true;
     await recorder.acquire({ simulatePath: pathToWalk, speedup: speed, routeId });
     // Give the simulated "GPS" a beat to produce a fix, then start.
-    setTimeout(() => recorder.start({ routeId }), 400);
+    setTimeout(() => { void startWalk(); }, 400);
     toast(`Simulating a walk at ${speed}× speed`);
   };
 
@@ -99,7 +106,8 @@ export function RecordPage() {
       if (id) nav(`/activity/${id}`, { replace: true });
       else { toast('Walk too short to save'); recorder.acquire().catch(() => {}); }
     } catch (e) {
-      toast(`Could not save: ${(e as Error).message}`);
+      // The recorder keeps the walk paused and its draft intact, so nothing is lost.
+      toast(`Could not save (${(e as Error).message}). Your walk is paused and safe. Try Finish again.`);
     }
   };
 
@@ -140,6 +148,7 @@ export function RecordPage() {
         {stylesOpen && <div className="row" style={{ justifyContent: 'flex-end', marginTop: 10 }}><StylePicker value={styleId} onChange={(v) => { setStyleId(v); setStylesOpen(false); }} /></div>}
         <div className="stack" style={{ marginTop: 10, gap: 8 }}>
           {rec.error && <div className="banner err">{rec.error.message}</div>}
+          {rec.draftError && live && <div className="banner err">Can't write to storage (device full?). This walk isn't protected if the app closes: free up space, or finish and save it now.</div>}
           {!isNative() && live && rec.source === 'gps' && <div className="banner">Keep this screen on — the browser stops GPS when the screen locks. Use the Android app for pocket tracking.</div>}
           {rec.status === 'paused' && <div className="banner">Paused — tap Resume to keep recording.</div>}
           {rec.autoPaused && rec.status === 'recording' && <div className="banner">Not moving — the clock keeps running, distance doesn't.</div>}
@@ -174,8 +183,11 @@ export function RecordPage() {
             </div>
           </>
         ) : (
+          draft ? (
+            <DraftCard draft={draft} />
+          ) : (
           <div className="stack" style={{ alignItems: 'center', gap: 14 }}>
-            <button className="start-btn" onClick={() => recorder.start({ routeId })} disabled={!fix}>
+            <button className="start-btn" onClick={startWalk} disabled={!fix}>
               {fix ? <><Icon name="play" size={22} fill /> Start walk</> : <><span className="spinner" /> Finding your location…</>}
             </button>
             <div className="row" style={{ gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -183,6 +195,7 @@ export function RecordPage() {
               <button className="chip" onClick={() => setSimOpen(true)}><Icon name="sim" size={16} /> Test with simulator</button>
             </div>
           </div>
+          )
         )}
       </div>
 

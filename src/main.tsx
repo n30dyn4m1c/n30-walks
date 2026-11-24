@@ -3,6 +3,10 @@ import { createRoot } from 'react-dom/client';
 import '@fontsource-variable/inter';
 import './styles/global.css';
 import { App } from './App';
+import { migrateStats } from './lib/activityBuilder';
+
+// Recompute stored stats once after an algorithm fix (derived data only; walks are untouched).
+migrateStats().catch((e) => console.warn('[stats] migration failed', e));
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

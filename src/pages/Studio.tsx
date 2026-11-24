@@ -13,12 +13,13 @@ import { Segmented, Switch, useSettings, useToast } from '../components/ui';
 import { buildFlyoverPlan, liveStatsAt, OUTRO, type FlyoverPlan } from '../flyover/plan';
 import { FlyoverScene } from '../flyover/scene';
 import { attributionFor, drawOverlay } from '../media/overlay';
-import { exportFlyoverVideo, videoExportSupported, type ExportProgress, type VideoResult } from '../media/videoExport';
+import { keepAwake } from '../lib/wakeLock';
+import { exportFlyoverVideo, outputSize, videoExportSupported, WHATSAPP_LIMIT_BYTES, type ExportProgress, type VideoResult } from '../media/videoExport';
 import { exportStatusImage } from '../media/imageExport';
-import { canShareFiles, downloadBlob, shareBlob, slug } from '../media/share';
+import { canShareFiles, saveBlob, shareBlob, slug } from '../media/share';
 import { MAP_STYLE_LIST, styleReady } from '../lib/mapStyles';
 import { fmtDuration } from '../lib/format';
-import { withDemElevation } from '../lib/activityBuilder';
+import { enrichElevation } from '../lib/activityBuilder';
 import type { Activity, OverlayConfig, Track } from '../types';
 
 const ACCENTS = ['#b8f34a', '#ffffff', '#ffd166', '#4ea1ff', '#ff7ab6', '#2ee6c5'];
@@ -32,14 +33,12 @@ export function StudioPage() {
   const track = useLiveQuery(() => db.tracks.get(id), [id]);
   const [elevChecked, setElevChecked] = useState(false);
   // The flyover camera needs ground elevation along the route. Walks saved offline may lack it:
-  // fetch it from the DEM now (and persist) so the camera can glide over the 3D terrain.
+  // fill it in from the DEM now (track AND stats, so elevation gain stays consistent).
   useEffect(() => {
-    if (!track || elevChecked) return;
-    if (track.points.every((p) => p.ele != null)) { setElevChecked(true); return; }
-    withDemElevation(track.points).then(async (r) => {
-      if (r.source === 'dem') await db.tracks.update(track.activityId, { points: r.points });
-    }).finally(() => setElevChecked(true));
-  }, [track, elevChecked]);
+    if (!track || !activity || elevChecked) return;
+    if (track.points.every((p) => p.ele != null) && activity.stats.elevationSource === 'dem') { setElevChecked(true); return; }
+    enrichElevation(activity.id).catch(() => false).finally(() => setElevChecked(true));
+  }, [track, activity, elevChecked]);
   if (activity === undefined || track === undefined || (track && !elevChecked)) return <div className="page"><span className="spinner" /></div>;
   if (!activity || !track) return <div className="page empty">Walk not found.</div>;
   return <Studio activity={activity} track={track} />;
@@ -149,36 +148,52 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
   const abortRef = useRef<AbortController | null>(null);
   const startedRef = useRef(0);
   useEffect(() => () => { if (result) URL.revokeObjectURL(result.url); }, [result]);
+  // Leaving the studio cancels an export in progress (it would otherwise keep rendering off-screen).
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const doExportVideo = async () => {
     setError(null); setResult(null); setBusy('video'); setPlaying(false);
     exportingRef.current = true;
-    abortRef.current = new AbortController();
+    const ctl = new AbortController();
+    abortRef.current = ctl;
     startedRef.current = performance.now();
+    // An export can take minutes on a phone: if the screen sleeps, rendering stalls.
+    const release = await keepAwake();
+    let lastPass = 1;
     try {
-      const info = await exportFlyoverVideo(activity, track, cfg, settings.units, setProgress, abortRef.current.signal);
+      const info = await exportFlyoverVideo(activity, track, cfg, settings.units, (p) => {
+        if ((p.pass ?? 1) !== lastPass) { lastPass = p.pass ?? 1; startedRef.current = performance.now(); }
+        setProgress(p);
+      }, ctl.signal);
+      if (ctl.signal.aborted) return;
       setResult({ kind: 'video', url: URL.createObjectURL(info.blob), blob: info.blob, info });
       if (!info.whatsappReady) toast('No H.264 encoder here — exported VP9. Use Chrome/Safari on your phone for WhatsApp.');
+      else if (!info.fitsWhatsApp) toast('The video is larger than WhatsApp allows. Try 720p or a shorter length.');
     } catch (e) {
       if ((e as DOMException).name !== 'AbortError') setError((e as Error).message);
-    } finally { setBusy(null); setProgress(null); exportingRef.current = false; }
+    } finally { release(); setBusy(null); setProgress(null); exportingRef.current = false; }
   };
 
   const doExportImage = async () => {
     setError(null); setResult(null); setBusy('image');
     exportingRef.current = true;
+    const release = await keepAwake();
     try {
       const blob = await exportStatusImage(activity, track, cfg, settings.units, '3d');
       setResult({ kind: 'image', url: URL.createObjectURL(blob), blob });
-    } catch (e) { setError((e as Error).message); } finally { setBusy(null); exportingRef.current = false; }
+    } catch (e) { setError((e as Error).message); } finally { release(); setBusy(null); exportingRef.current = false; }
   };
 
   const share = async () => {
     if (!result) return;
     const ext = result.kind === 'video' ? 'mp4' : 'jpg';
-    const outcome = await shareBlob(result.blob, `stride-${slug(activity.name)}.${ext}`);
-    if (outcome === 'downloaded') toast('Saved to downloads — send it to your phone and post to Status');
-    if (outcome === 'shared') toast('Pick WhatsApp → My status');
+    try {
+      const outcome = await shareBlob(result.blob, `stride-${slug(activity.name)}.${ext}`);
+      if (outcome === 'downloaded') toast('Saved to downloads — send it to your phone and post to Status');
+      if (outcome === 'shared') toast('Pick WhatsApp → My status');
+    } catch (e) {
+      toast(`Could not share: ${(e as Error).message}`);
+    }
   };
 
   const pct = progress ? Math.round((progress.frame / progress.frames) * 100) : 0;
@@ -225,9 +240,10 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
             {!videoExportSupported() && <div className="banner">This browser lacks WebCodecs video encoding. Use Chrome, Edge, or Safari 17+ — or export an image.</div>}
             {busy === 'video' && progress && (
               <div className="stack" style={{ gap: 6 }}>
+                <div className="faint small">Keep Stride open on this screen until the export finishes.</div>
                 <div className="progress-bar"><div style={{ width: `${pct}%` }} /></div>
                 <div className="row between small muted">
-                  <span>{progress.phase === 'loading' ? 'Loading terrain & tiles…' : progress.phase === 'finalizing' ? 'Finalizing MP4…' : `Rendering frame ${progress.frame}/${progress.frames}`}</span>
+                  <span>{progress.phase === 'loading' ? 'Loading terrain & tiles…' : progress.phase === 'finalizing' ? 'Finalizing MP4…' : progress.pass === 2 ? `File too large, re-encoding smaller · ${progress.frame}/${progress.frames}` : `Rendering frame ${progress.frame}/${progress.frames}`}</span>
                   <span className="tnum">{eta != null ? `~${Math.ceil(eta)}s left` : `${pct}%`}</span>
                 </div>
                 <button className="btn ghost sm" onClick={() => abortRef.current?.abort()}>Cancel</button>
@@ -242,12 +258,17 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
                     : <img src={result.url} alt="Status image preview" style={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover' }} />}
                 </div>
                 <div className="faint small" style={{ textAlign: 'center' }}>
-                  {result.kind === 'video' ? `${result.info.width}×${result.info.height} · ${result.info.seconds}s · ${result.info.codec.startsWith('avc') ? 'H.264' : 'VP9'} · ` : '1080×1920 JPEG · '}
-                  {(result.blob.size / 1024 / 1024).toFixed(1)} MB
+                  {result.kind === 'video'
+                    ? `${result.info.width}×${result.info.height} · ${result.info.seconds}s · ${result.info.codec.startsWith('avc') ? 'H.264' : 'VP9'} · `
+                    : `${outputSize(cfg.quality).width}×${outputSize(cfg.quality).height} JPEG · `}
+                  {(result.blob.size / 1e6).toFixed(1)} MB
+                  {result.kind === 'video' && (result.info.whatsappReady && result.blob.size <= WHATSAPP_LIMIT_BYTES
+                    ? <span className="badge" style={{ marginLeft: 6 }}>WhatsApp-ready</span>
+                    : <span className="badge" style={{ marginLeft: 6, color: 'var(--warn)', background: 'rgba(255,181,71,0.14)' }}>{result.info.whatsappReady ? 'Over 16 MB' : 'Not H.264'}</span>)}
                 </div>
                 <div className="row">
                   <button className="btn primary grow" onClick={share}><Icon name="share" size={18} /> {canShareFiles() ? 'Share to WhatsApp' : 'Save for WhatsApp'}</button>
-                  <button className="btn" onClick={() => downloadBlob(result.blob, `stride-${slug(activity.name)}.${result.kind === 'video' ? 'mp4' : 'jpg'}`)} aria-label="Download"><Icon name="download" size={18} /></button>
+                  <button className="btn" onClick={() => saveBlob(result.blob, `stride-${slug(activity.name)}.${result.kind === 'video' ? 'mp4' : 'jpg'}`).catch((e) => toast(`Could not save the file: ${(e as Error).message}`))} aria-label="Download"><Icon name="download" size={18} /></button>
                 </div>
               </div>
             )}

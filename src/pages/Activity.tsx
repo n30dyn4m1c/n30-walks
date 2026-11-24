@@ -13,7 +13,8 @@ import { rollingPace, toLngLat } from '../lib/stats';
 import { cumulativeDistances, simplifyToCount } from '../lib/geo';
 import { recordsSetBy } from '../lib/records';
 import { trackToGpx } from '../lib/gpx';
-import { downloadBlob, slug } from '../media/share';
+import { enrichElevation } from '../lib/activityBuilder';
+import { saveBlob, slug } from '../media/share';
 import { distanceUnit, elevationUnit, fmtDate, fmtDistance, fmtDuration, fmtElevation, fmtNumber, fmtPace, fmtTime, paceUnit, uid } from '../lib/format';
 import type { MapStyleId } from '../types';
 
@@ -42,6 +43,14 @@ export function ActivityPage() {
     if (eles.some((e) => e == null)) return null;
     return { d: cumulativeDistances(coords), e: eles as number[] };
   }, [track, coords]);
+  // Walks saved without terrain elevation (offline at the end) get it filled in now.
+  const elevationSource = activity?.stats.elevationSource;
+  useEffect(() => {
+    if (activity && elevationSource !== 'dem' && navigator.onLine !== false) {
+      enrichElevation(activity.id).then((done) => { if (done) toast('Elevation updated from the terrain model'); }).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activity?.id, elevationSource]);
   const prs = useMemo(() => (all && activity ? recordsSetBy(activity.id, all) : []), [all, activity]);
 
   const draw = (map: maplibregl.Map) => {
@@ -156,7 +165,7 @@ export function ActivityPage() {
 
         <div className="row wrap">
           <button className="btn sm" onClick={saveAsRoute}><Icon name="routes" size={16} /> Save as route</button>
-          <button className="btn sm" onClick={() => downloadBlob(new Blob([trackToGpx(activity.name, track.points)], { type: 'application/gpx+xml' }), `${slug(activity.name)}.gpx`)}><Icon name="download" size={16} /> Export GPX</button>
+          <button className="btn sm" onClick={() => saveBlob(new Blob([trackToGpx(activity.name, track.points)], { type: 'application/gpx+xml' }), `${slug(activity.name)}.gpx`).catch((e) => toast(`Could not save the file: ${(e as Error).message}`))}><Icon name="download" size={16} /> Export GPX</button>
           <button className="btn sm danger" onClick={remove}><Icon name="trash" size={16} /> Delete</button>
         </div>
         <div className="faint small">{track.points.length} GPS points · source: {activity.source}{track.pauses.length ? ` · ${track.pauses.length} pause(s)` : ''}</div>

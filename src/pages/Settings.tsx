@@ -1,11 +1,12 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { clearAllData, db, exportBackup, getSettings, importBackup, updateSettings } from '../db/db';
+import { clearAllData, exportBackup, importBackup, requestPersistentStorage, storageProtection, updateSettings, type StorageProtection } from '../db/db';
 import { Icon } from '../components/Icon';
 import { Segmented, Switch, useSettings, useToast } from '../components/ui';
 import { MAP_STYLE_LIST } from '../lib/mapStyles';
-import { seedDemoData, recomputeStats } from '../lib/activityBuilder';
-import { downloadBlob } from '../media/share';
+import { seedDemoData, recomputeAllActivities } from '../lib/activityBuilder';
+import { saveBlob } from '../media/share';
+import { fmtDate } from '../lib/format';
 import { isNative } from '../tracking/providers';
 import type { Units } from '../types';
 
@@ -16,18 +17,23 @@ export function SettingsPage() {
   const file = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
 
+  const [protection, setProtection] = useState<StorageProtection>('unknown');
+  useEffect(() => { storageProtection().then(setProtection); }, []);
+
   /** Units/weight/stride affect splits, steps and kcal: recompute stored activities. */
-  const recomputeAll = async () => {
-    const settings = await getSettings();
-    const acts = await db.activities.toArray();
-    for (const a of acts) {
-      const t = await db.tracks.get(a.id);
-      if (t) await db.activities.put(recomputeStats(a, t, settings));
-    }
-  };
   const setAndRecompute = async (patch: Parameters<typeof updateSettings>[0]) => {
     await updateSettings(patch);
-    await recomputeAll();
+    const n = await recomputeAllActivities();
+    if (n) toast(`Saved · recalculated ${n} walk${n === 1 ? '' : 's'}`);
+  };
+
+  const backup = async () => {
+    try {
+      const outcome = await saveBlob(new Blob([await exportBackup()], { type: 'application/json' }), `stride-backup-${new Date().toISOString().slice(0, 10)}.json`);
+      if (outcome !== 'cancelled') await updateSettings({ lastBackupAt: Date.now() });
+    } catch (e) {
+      toast(`Backup failed: ${(e as Error).message}`);
+    }
   };
 
   return (
@@ -63,9 +69,22 @@ export function SettingsPage() {
 
         <div className="card stack">
           <h3>Your data</h3>
-          <p className="muted small" style={{ margin: 0 }}>Everything stays on this device. No account, no cloud, no social features.</p>
+          <p className="muted small" style={{ margin: 0 }}>Everything stays on this device. No account, no cloud, no social features. A backup file is the only copy outside this device.</p>
+          <div className="list-row">
+            <span>Last backup</span>
+            <span className={s.lastBackupAt ? 'muted small' : 'small'} style={s.lastBackupAt ? undefined : { color: 'var(--warn)' }}>{s.lastBackupAt ? fmtDate(s.lastBackupAt) : 'Never'}</span>
+          </div>
+          {!isNative() && protection !== 'unknown' && (
+            <div className="list-row">
+              <span>
+                Browser storage
+                <div className="faint small">{protection === 'persistent' ? 'Protected: the browser won’t clear your walks to free space.' : 'Not protected: the browser may clear your walks if space runs low or the site goes unused.'}</div>
+              </span>
+              {protection !== 'persistent' && <button className="btn sm" onClick={async () => { const r = await requestPersistentStorage(); setProtection(r); toast(r === 'persistent' ? 'Storage protected' : 'The browser declined. Install the app or make regular backups.'); }}>Protect</button>}
+            </div>
+          )}
           <div className="row wrap">
-            <button className="btn sm" onClick={async () => downloadBlob(new Blob([await exportBackup()], { type: 'application/json' }), `stride-backup-${new Date().toISOString().slice(0, 10)}.json`)}><Icon name="download" size={16} /> Export backup</button>
+            <button className="btn sm" onClick={backup}><Icon name="download" size={16} /> Export backup</button>
             <button className="btn sm" onClick={() => file.current?.click()}><Icon name="upload" size={16} /> Import backup</button>
             <input ref={file} type="file" accept="application/json,.json" hidden onChange={async (e) => {
               const f = e.target.files?.[0]; e.target.value = '';

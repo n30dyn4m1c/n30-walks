@@ -19,7 +19,7 @@ import { elevationGainLoss, smooth } from '../lib/stats';
 import { bbox, cumulativeDistances, resample, simplifyToCount, type LngLat } from '../lib/geo';
 import { fmtDistance, fmtElevation, uid, M_PER_MI } from '../lib/format';
 import { routeToGpx } from '../lib/gpx';
-import { downloadBlob, slug } from '../media/share';
+import { saveBlob, slug } from '../media/share';
 import { DEMO_START } from '../lib/demo';
 import type { MapStyleId, Route } from '../types';
 
@@ -224,7 +224,7 @@ export function RoutesPage() {
                   {selected?.id === r.id && (
                     <div className="row wrap" style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
                       <button className="btn primary sm" onClick={() => nav(`/record?route=${r.id}`)}><Icon name="walk" size={16} /> Walk it</button>
-                      <button className="btn sm" onClick={() => downloadBlob(new Blob([routeToGpx(r.name, r.geometry)], { type: 'application/gpx+xml' }), `${slug(r.name)}.gpx`)}><Icon name="download" size={16} /> GPX</button>
+                      <button className="btn sm" onClick={() => saveBlob(new Blob([routeToGpx(r.name, r.geometry)], { type: 'application/gpx+xml' }), `${slug(r.name)}.gpx`).catch((e) => toast(`Could not save the file: ${(e as Error).message}`))}><Icon name="download" size={16} /> GPX</button>
                       <button className="btn sm" onClick={async () => { const n = prompt('Rename route', r.name); if (n) await db.routes.update(r.id, { name: n, updatedAt: Date.now() }); }}><Icon name="edit" size={16} /></button>
                       <button className="btn sm danger" onClick={async () => { if (confirm('Delete route?')) { await db.routes.delete(r.id); setSelected(null); } }}><Icon name="trash" size={16} /></button>
                     </div>

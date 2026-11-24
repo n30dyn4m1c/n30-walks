@@ -140,6 +140,10 @@ export interface Settings {
   maxAccuracyM: number;
   keepScreenOn: boolean;
   onboarded: boolean;
+  /** STATS_VERSION the stored activity stats were computed with (see migrateStats) */
+  statsVersion?: number;
+  /** When the user last exported a JSON backup (ms) */
+  lastBackupAt?: number;
 }
 
 /** In-progress recording, persisted continuously for crash recovery. */
