@@ -150,8 +150,13 @@ Next suggested order (all ⬜ items above):
 ### Verified
 - `npm test` passes: 41 tests, including the recorder integration tests and the gap, pause and parity stats tests.
 - `npm run build` passes.
-- `npm run e2e` in a sandbox with map and terrain hosts blocked passed: home, web-GPS record → save, simulated 1.6 km loop (recorded 1.67 km), splits, elevation profile, JPEG export (720×1280).
-- The MP4 step was still running when the PR was merged, at ~9 s per frame without tiles. **Run `npm run build && npm run e2e` on a machine with network access to confirm the MP4 step.**
+- `npm run e2e` passes end to end (all checks), run in a sandbox with map and terrain hosts blocked:
+  - home; web-GPS record → save; simulated 1.6 km loop (recorded 1.67 km); splits; elevation profile.
+  - JPEG export (720×1280).
+  - MP4 export: H.264, 720×1280, 30 fps, 300 frames, exactly 10 s, 5.9 MB.
+  - Fastest-1 km PR computed; history persists across reload; planned route saved.
+  - The video took ~56 min here (software WebGL, ~11 s per frame); on a phone or desktop it is minutes.
+- ⬜ The same run logged two non-fatal console errors: `Failed to load module script … MIME type "text/html"`. A JS chunk request got the HTML fallback instead. This is probably a stale-chunk/service-worker issue (see M6). Unconfirmed; reproduce by reloading after a rebuild.
 
 ### Needs a real device
 1. Native share-sheet save of backup, GPX and MP4 on Android and iOS, including the chunked `appendFile` writes on Android.
