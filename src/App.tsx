@@ -1,9 +1,10 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, HashRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Link, NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import { Icon } from './components/Icon';
-import { ToastProvider } from './components/ui';
-import { useRecorder } from './tracking/recorder';
+import { ToastProvider, useSettings } from './components/ui';
+import { elapsedSeconds, useRecorder } from './tracking/recorder';
+import { distanceUnit, fmtDistance, fmtDuration } from './lib/format';
 import { HomePage } from './pages/Home';
 import { RecordPage } from './pages/Record';
 import { HistoryPage } from './pages/History';
@@ -31,6 +32,24 @@ function Nav() {
   );
 }
 
+/** While a walk is in progress, a pill above the nav on every other screen leads back to it. */
+function RecordingPill() {
+  const rec = useRecorder();
+  const settings = useSettings();
+  const loc = useLocation();
+  const live = rec.status === 'recording' || rec.status === 'paused';
+  if (!live || loc.pathname.startsWith('/record') || loc.pathname.startsWith('/studio')) return null;
+  const u = settings.units;
+  const paused = rec.status === 'paused';
+  return (
+    <Link to="/record" className={`rec-pill ${paused ? 'paused' : ''}`} aria-label={`${paused ? 'Walk paused' : 'Recording a walk'}. Open the recording screen.`}>
+      <span className="dot" aria-hidden />
+      <span>{paused ? 'Paused' : 'Recording'}</span>
+      <span className="tnum">{fmtDuration(elapsedSeconds(rec))} · {fmtDistance(rec.distanceM, u)} {distanceUnit(u)}</span>
+    </Link>
+  );
+}
+
 export function App() {
   // File-based native shells and some static hosts can't rewrite deep links: use hash routing there.
   const Router = Capacitor.isNativePlatform() || location.protocol === 'file:' ? HashRouter : BrowserRouter;
@@ -51,6 +70,7 @@ export function App() {
               <Route path="*" element={<HomePage />} />
             </Routes>
           </Suspense>
+          <RecordingPill />
           <Nav />
         </div>
       </Router>

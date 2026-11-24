@@ -5,7 +5,7 @@ import { db } from '../db/db';
 import { Icon } from '../components/Icon';
 import { ProgressRing, RouteThumb } from '../components/Charts';
 import { useActivities, useSettings, useToast, Stat } from '../components/ui';
-import { goalProgress, dayStreak, weekStreak, periodStart, metricValue } from '../lib/records';
+import { countedWalks, goalProgress, dayStreak, weekStreak, periodStart, metricValue } from '../lib/records';
 import { fmtDate, fmtDistance, fmtDuration, fmtDurationShort, fmtPace, fmtElevation, distanceUnit, fmtNumber } from '../lib/format';
 import { seedDemoData } from '../lib/activityBuilder';
 import { useRecorder } from '../tracking/recorder';
@@ -51,12 +51,13 @@ export function HomePage() {
   if (!activities) return <div className="page" />;
   const units = settings.units;
   const weekStart = periodStart(Date.now(), 'week');
-  const week = activities.filter((a) => a.startedAt >= weekStart);
+  const counted = countedWalks(activities);
+  const week = counted.filter((a) => a.startedAt >= weekStart);
   const weekDist = week.reduce((s, a) => s + a.stats.distanceM, 0);
   const weekTime = week.reduce((s, a) => s + a.stats.movingS, 0);
   const weekSteps = week.reduce((s, a) => s + metricValue(a, 'steps'), 0);
   const goal: Goal = goals?.[0] ?? { id: 'implicit', metric: 'distance', period: 'week', target: 20000, createdAt: 0 };
-  const gp = goalProgress(goal, activities);
+  const gp = goalProgress(goal, counted);
   const latest = activities[0];
 
   const seed = async () => {
@@ -109,8 +110,8 @@ export function HomePage() {
         </div>
 
         <div className="stat-grid two">
-          <div className="card row"><Icon name="flame" className="muted" /><div><div style={{ fontSize: 22, fontWeight: 800 }}>{dayStreak(activities)}</div><div className="faint small">day streak</div></div></div>
-          <div className="card row"><Icon name="target" className="muted" /><div><div style={{ fontSize: 22, fontWeight: 800 }}>{weekStreak(activities)}</div><div className="faint small">week streak</div></div></div>
+          <div className="card row"><Icon name="flame" className="muted" /><div><div style={{ fontSize: 22, fontWeight: 800 }}>{dayStreak(counted)}</div><div className="faint small">day streak</div></div></div>
+          <div className="card row"><Icon name="target" className="muted" /><div><div style={{ fontSize: 22, fontWeight: 800 }}>{weekStreak(counted)}</div><div className="faint small">week streak</div></div></div>
         </div>
 
         {latest ? (

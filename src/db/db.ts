@@ -5,6 +5,7 @@
  * they export it.
  */
 import Dexie, { type Table } from 'dexie';
+import { Capacitor } from '@capacitor/core';
 import type { Activity, Goal, OverlayConfig, RecordingDraft, Route, Settings, Track } from '../types';
 
 export class StrideDB extends Dexie {
@@ -56,7 +57,8 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultMapStyle: 'outdoor',
   overlay: DEFAULT_OVERLAY,
   maxAccuracyM: 35,
-  keepScreenOn: true,
+  // Native builds track with the screen off (foreground service); only the web needs the screen on.
+  keepScreenOn: !Capacitor.isNativePlatform(),
   onboarded: false,
 };
 
@@ -117,6 +119,16 @@ export async function deleteActivity(id: string): Promise<void> {
   await db.transaction('rw', db.activities, db.tracks, async () => {
     await db.activities.delete(id);
     await db.tracks.delete(id);
+  });
+}
+
+/** Delete every walk (and its track) recorded from one of `sources`, e.g. demo walks. */
+export async function deleteActivitiesBySource(sources: Activity['source'][]): Promise<number> {
+  return db.transaction('rw', db.activities, db.tracks, async () => {
+    const ids = (await db.activities.filter((a) => sources.includes(a.source)).primaryKeys()) as string[];
+    await db.activities.bulkDelete(ids);
+    await db.tracks.bulkDelete(ids);
+    return ids.length;
   });
 }
 

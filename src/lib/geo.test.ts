@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { angleDelta, bearing, circularMean, cumulativeDistances, destination, haversine, pointAtDistance, resample, simplify, sliceToDistance, type LngLat } from './geo';
+import { angleDelta, bearing, circularMean, cumulativeDistances, destination, haversine, nearestOnPath, pointAtDistance, resample, simplify, sliceToDistance, type LngLat } from './geo';
 
 describe('geo', () => {
   it('haversine ~ 111.2 km per degree of latitude', () => {
@@ -33,5 +33,24 @@ describe('geo', () => {
     expect(angleDelta(350, 10)).toBe(20);
     expect(angleDelta(10, 350)).toBe(-20);
     expect(circularMean([350, 10])).toBeCloseTo(0, 5);
+  });
+
+  it('nearestOnPath: distance off the line and along it', () => {
+    const start: LngLat = [0, 0];
+    const line = [start, destination(start, 1000, 90)];
+    const cum = cumulativeDistances(line);
+    const p = destination(destination(start, 400, 90), 30, 0); // 400 m along, 30 m north
+    const r = nearestOnPath(line, cum, p);
+    expect(r.alongM).toBeCloseTo(400, -1);
+    expect(r.offM).toBeCloseTo(30, 0);
+  });
+  it('nearestOnPath: on a loop, the hint picks the start or the end pass', () => {
+    const a: LngLat = [0, 0];
+    const b = destination(a, 500, 90), c = destination(b, 500, 0), d = destination(a, 500, 0);
+    const loop = [a, b, c, d, a];
+    const cum = cumulativeDistances(loop);
+    const near = destination(a, 5, 45);
+    expect(nearestOnPath(loop, cum, near, 0).alongM).toBeLessThan(50);
+    expect(nearestOnPath(loop, cum, near, 1900).alongM).toBeGreaterThan(1950);
   });
 });

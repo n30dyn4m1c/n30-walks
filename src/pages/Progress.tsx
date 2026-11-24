@@ -5,7 +5,7 @@ import { db } from '../db/db';
 import { Icon } from '../components/Icon';
 import { BarChart, ProgressRing } from '../components/Charts';
 import { Segmented, Sheet, useActivities, useSettings } from '../components/ui';
-import { bucketize, computeRecords, goalProgress, dayStreak, weekStreak, type PersonalRecord } from '../lib/records';
+import { bucketize, computeRecords, countedWalks, goalProgress, dayStreak, weekStreak, type PersonalRecord } from '../lib/records';
 import { distanceValue, fmtDate, fmtDistance, fmtDuration, fmtDurationShort, fmtElevation, fmtNumber, distanceUnit, M_PER_MI, FT_PER_M, uid } from '../lib/format';
 import type { Goal, GoalMetric, GoalPeriod, Units } from '../types';
 
@@ -52,7 +52,10 @@ function prValue(r: PersonalRecord, units: Units) {
 export function ProgressPage() {
   const settings = useSettings();
   const u = settings.units;
-  const activities = useActivities() ?? [];
+  const all = useActivities() ?? [];
+  // Demo and simulated walks don't count once there's a real walk.
+  const activities = countedWalks(all);
+  const ignored = all.length - activities.length;
   const goals = useLiveQuery(() => db.goals.toArray(), []) ?? [];
   const [metric, setMetric] = useState<GoalMetric>('distance');
   const [period, setPeriod] = useState<'week' | 'month'>('week');
@@ -85,14 +88,14 @@ export function ProgressPage() {
           {goals.map((g) => {
             const p = goalProgress(g, activities);
             return (
-              <div key={g.id} className="card row link" style={{ gap: 16 }} onClick={() => openEdit(g)}>
+              <button type="button" key={g.id} className="card row link" style={{ gap: 16 }} onClick={() => openEdit(g)} aria-label={`Edit goal: ${goalLabel(g)}`}>
                 <ProgressRing fraction={p.fraction} expected={p.expectedFraction} size={72} stroke={8}><strong style={{ fontSize: 15 }}>{Math.round(p.fraction * 100)}%</strong></ProgressRing>
                 <div className="grow">
                   <h3>{goalLabel(g)}</h3>
                   <div className="tnum" style={{ marginTop: 4 }}><strong>{fmtGoalValue(g.metric, p.value, u)}</strong> <span className="muted">of {fmtGoalValue(g.metric, g.target, u)}</span></div>
                   <div className="faint small">{p.fraction >= 1 ? 'Completed ✓' : `${fmtGoalValue(g.metric, Math.max(0, g.target - p.value), u)} to go · ends ${fmtDate(p.end - 1)}`}</div>
                 </div>
-              </div>
+              </button>
             );
           })}
         </section>
@@ -100,7 +103,7 @@ export function ProgressPage() {
         <section className="card stack">
           <div className="row between wrap">
             <h2>Trends</h2>
-            <Segmented value={period} onChange={setPeriod} options={[{ value: 'week', label: 'Weeks' }, { value: 'month', label: 'Months' }]} />
+            <Segmented label="Group by" value={period} onChange={setPeriod} options={[{ value: 'week', label: 'Weeks' }, { value: 'month', label: 'Months' }]} />
           </div>
           <div className="chips">
             {(['distance', 'duration', 'count', 'elevation', 'steps'] as GoalMetric[]).map((m) => (
@@ -125,6 +128,7 @@ export function ProgressPage() {
 
         <section className="card">
           <h2 style={{ marginBottom: 14 }}>All time</h2>
+          {ignored > 0 && <div className="faint small" style={{ marginTop: -8, marginBottom: 12 }}>{ignored} demo or simulated {ignored === 1 ? 'walk isn’t' : 'walks aren’t'} counted in goals, records or totals.</div>}
           <div className="stat-grid">
             <div className="stat"><div className="label">Walks</div><div className="value">{activities.length}</div></div>
             <div className="stat"><div className="label">Distance</div><div className="value">{fmtDistance(totalDist, u)}<small>{distanceUnit(u)}</small></div></div>
@@ -145,7 +149,7 @@ export function ProgressPage() {
               </select>
             </div>
             <div className="field"><label>Period</label>
-              <Segmented value={editing.period} onChange={(p) => setEditing({ ...editing, period: p })} options={(['day', 'week', 'month', 'year'] as GoalPeriod[]).map((p) => ({ value: p, label: PERIOD_LABEL[p] }))} />
+              <Segmented label="Goal period" value={editing.period} onChange={(p) => setEditing({ ...editing, period: p })} options={(['day', 'week', 'month', 'year'] as GoalPeriod[]).map((p) => ({ value: p, label: PERIOD_LABEL[p] }))} />
             </div>
             <div className="field"><label>Target ({unitHint(editing.metric, u)})</label><input className="input" inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)} /></div>
             <button className="btn primary block" onClick={saveGoal}>Save goal</button>

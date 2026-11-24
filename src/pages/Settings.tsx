@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { clearAllData, exportBackup, importBackup, requestPersistentStorage, storageProtection, updateSettings, type StorageProtection } from '../db/db';
+import { clearAllData, deleteActivitiesBySource, exportBackup, importBackup, requestPersistentStorage, storageProtection, updateSettings, type StorageProtection } from '../db/db';
 import { Icon } from '../components/Icon';
 import { Segmented, Switch, useSettings, useToast } from '../components/ui';
 import { MAP_STYLE_LIST } from '../lib/mapStyles';
@@ -45,7 +45,7 @@ export function SettingsPage() {
       <div className="stack-lg">
         <div className="card stack">
           <h3>Units & body</h3>
-          <Segmented<Units> value={s.units} onChange={(units) => setAndRecompute({ units })} options={[{ value: 'metric', label: 'Kilometres' }, { value: 'imperial', label: 'Miles' }]} />
+          <Segmented<Units> label="Units" value={s.units} onChange={(units) => setAndRecompute({ units })} options={[{ value: 'metric', label: 'Kilometres' }, { value: 'imperial', label: 'Miles' }]} />
           <div className="row">
             <div className="field grow"><label>Weight (kg) — for calories</label><input className="input" inputMode="decimal" defaultValue={s.weightKg} key={`w${s.weightKg}`} onBlur={(e) => { const v = parseFloat(e.target.value); if (v > 20 && v < 300) setAndRecompute({ weightKg: v }); }} /></div>
             <div className="field grow"><label>Stride (m) — for steps</label><input className="input" inputMode="decimal" defaultValue={s.strideM} key={`s${s.strideM}`} onBlur={(e) => { const v = parseFloat(e.target.value); if (v > 0.3 && v < 1.5) setAndRecompute({ strideM: v }); }} /></div>
@@ -58,18 +58,19 @@ export function SettingsPage() {
             <label>Ignore GPS fixes worse than ±{s.maxAccuracyM} m</label>
             <input type="range" className="scrubber" min={10} max={80} step={5} value={s.maxAccuracyM} onChange={(e) => updateSettings({ maxAccuracyM: Number(e.target.value) })} />
           </div>
-          <div className="list-row"><span>Keep screen on while recording</span><Switch checked={s.keepScreenOn} onChange={(v) => updateSettings({ keepScreenOn: v })} /></div>
+          <div className="list-row"><span>Keep screen on while recording</span><Switch checked={s.keepScreenOn} onChange={(v) => updateSettings({ keepScreenOn: v })} label="Keep screen on while recording" /></div>
           <div className="faint small">{isNative() ? 'Native build: GPS continues in the background via a foreground service.' : 'Web: GPS works while this page is visible. For screen-off tracking use the Android/iOS build.'}</div>
         </div>
 
         <div className="card stack">
           <h3>Default map</h3>
-          <div className="chips">{MAP_STYLE_LIST.map((m) => <button key={m.id} className={`chip ${s.defaultMapStyle === m.id ? 'on' : ''}`} onClick={() => updateSettings({ defaultMapStyle: m.id })}>{m.label}</button>)}</div>
+          <div className="chips">{MAP_STYLE_LIST.map((m) => <button key={m.id} aria-pressed={s.defaultMapStyle === m.id} className={`chip ${s.defaultMapStyle === m.id ? 'on' : ''}`} onClick={() => updateSettings({ defaultMapStyle: m.id })}>{m.label}</button>)}</div>
         </div>
 
         <div className="card stack">
           <h3>Your data</h3>
-          <p className="muted small" style={{ margin: 0 }}>Everything stays on this device. No account, no cloud, no social features. A backup file is the only copy outside this device.</p>
+          <p className="muted small" style={{ margin: 0 }}>Your walks stay on this device. No account, no cloud, no social features. A backup file is the only copy outside this device.</p>
+          <p className="faint small" style={{ margin: 0 }}>Some features use online services, which see the area you are looking at but never your walks: map tiles (OpenFreeMap, CARTO, Esri), terrain and elevation (AWS Open Data), and route planning (routing.openstreetmap.de, which receives your waypoints).</p>
           <div className="list-row">
             <span>Last backup</span>
             <span className={s.lastBackupAt ? 'muted small' : 'small'} style={s.lastBackupAt ? undefined : { color: 'var(--warn)' }}>{s.lastBackupAt ? fmtDate(s.lastBackupAt) : 'Never'}</span>
@@ -92,6 +93,7 @@ export function SettingsPage() {
               try { const r = await importBackup(await f.text()); toast(`Imported ${r.activities} walks, ${r.routes} routes`); } catch (err) { toast((err as Error).message); }
             }} />
             <button className="btn sm" disabled={busy} onClick={async () => { setBusy(true); try { toast(`Added ${await seedDemoData(s)} demo walks`); } finally { setBusy(false); } }}>{busy ? <span className="spinner" /> : 'Add demo walks'}</button>
+            <button className="btn sm" disabled={busy} onClick={async () => { const n = await deleteActivitiesBySource(['demo']); toast(n ? `Removed ${n} demo walks` : 'No demo walks to remove'); }}>Remove demo walks</button>
             <button className="btn sm danger" onClick={async () => { if (confirm('Delete ALL walks, routes and goals? This cannot be undone.')) { await clearAllData(); toast('All data deleted'); } }}><Icon name="trash" size={16} /> Delete all</button>
           </div>
         </div>

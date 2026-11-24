@@ -7,7 +7,7 @@ import { db, deleteActivity } from '../db/db';
 import { MapView } from '../components/MapView';
 import { Icon } from '../components/Icon';
 import { ElevationChart } from '../components/Charts';
-import { Sheet, Stat, StylePicker, useActivities, useSettings, useToast } from '../components/ui';
+import { Sheet, Stat, StylePicker, useActivities, useMapStyle, useSettings, useToast } from '../components/ui';
 import { addEndpoints, addRouteLayers, paceGradient, setHighlight } from '../lib/mapLayers';
 import { rollingPace, toLngLat } from '../lib/stats';
 import { cumulativeDistances, simplifyToCount } from '../lib/geo';
@@ -16,7 +16,6 @@ import { trackToGpx } from '../lib/gpx';
 import { enrichElevation } from '../lib/activityBuilder';
 import { saveBlob, slug } from '../media/share';
 import { distanceUnit, elevationUnit, fmtDate, fmtDistance, fmtDuration, fmtElevation, fmtNumber, fmtPace, fmtTime, paceUnit, uid } from '../lib/format';
-import type { MapStyleId } from '../types';
 
 export function ActivityPage() {
   const { id = '' } = useParams();
@@ -28,7 +27,7 @@ export function ActivityPage() {
   const track = useLiveQuery(() => db.tracks.get(id), [id]);
   const all = useActivities();
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const [styleId, setStyleId] = useState<MapStyleId>(settings.defaultMapStyle);
+  const [styleId, setStyleId] = useMapStyle(settings);
   const [terrain, setTerrain] = useState(true);
   const [paceColors, setPaceColors] = useState(true);
   const [editOpen, setEditOpen] = useState(false);

@@ -6,7 +6,7 @@
   --line: #26302b;
   --text: #f2f5f3;
   --text-2: #a6b2ab;
-  --text-3: #6f7c75;
+  --text-3: #8a978f;
   --accent: #b8f34a;
   --accent-ink: #0b0f0d;
   --accent-soft: rgba(184, 243, 74, 0.14);
@@ -67,6 +67,10 @@ h3 { font-size: 16px; font-weight: 700; }
 .card.tight { padding: 12px; }
 .card.link { transition: transform .12s ease, background .12s; cursor: pointer; }
 .card.link:active { transform: scale(0.985); background: var(--bg-elev-2); }
+/* A card (or part of one) that is a real <button>: reset the native button look. */
+button.card { width: 100%; text-align: left; font: inherit; color: inherit; }
+.card-btn { display: flex; align-items: center; gap: 14px; width: 100%; padding: 0; border: 0; background: none; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .hero-card {
   border-radius: 24px; padding: 20px;
   background: radial-gradient(120% 140% at 0% 0%, rgba(184,243,74,0.20), transparent 55%), var(--bg-elev);
@@ -92,6 +96,7 @@ h3 { font-size: 16px; font-weight: 700; }
   width: 44px; height: 44px; border-radius: 999px; display: inline-grid; place-items: center;
   background: rgba(19,25,22,0.85); border: 1px solid var(--line); cursor: pointer; backdrop-filter: blur(10px);
 }
+.icon-btn.sm { width: 32px; height: 32px; flex: none; }
 .icon-btn.active { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 
 /* ---------- chips / segmented ---------- */
@@ -177,6 +182,25 @@ h3 { font-size: 16px; font-weight: 700; }
 .ctrl-btn.go { background: var(--accent); color: var(--accent-ink); }
 .ctrl-btn.pause { background: var(--warn); color: #1a1205; }
 .ctrl-btn.stop { background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--line); }
+/* Hold-to-confirm: a fill sweeps across the button while it is held. */
+.hold { position: relative; overflow: hidden; touch-action: manipulation; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.hold > * { position: relative; z-index: 1; }
+.hold::before { content: ''; position: absolute; inset: 0; background: var(--danger); opacity: 0.85; transform: scaleX(0); transform-origin: left; }
+.hold.holding::before { transform: scaleX(1); transition: transform var(--hold-ms, 800ms) linear; }
+
+/* Recording pill: shown above the nav on other screens while a walk is in progress. */
+.rec-pill {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + var(--safe-b) + 10px); z-index: 45;
+  display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 999px; white-space: nowrap;
+  background: var(--danger); color: #fff; font-size: 14px; font-weight: 700; box-shadow: var(--shadow);
+}
+.rec-pill .dot { background: #fff; animation: blink 1.2s infinite; }
+.rec-pill.paused { background: var(--warn); color: #1a1205; }
+.rec-pill.paused .dot { background: #1a1205; animation: none; }
+@keyframes blink { 50% { opacity: 0.3; } }
+.app:has(.rec-pill) .page { padding-bottom: calc(var(--nav-h) + var(--safe-b) + 72px); }
+@media (prefers-reduced-motion: reduce) { .rec-pill .dot, .nav .rec.live { animation: none; } .hold.holding::before { transition-duration: 0s; } }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .start-btn {
   width: 100%; max-width: 360px; min-height: 68px; border-radius: 999px; border: 0; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; gap: 10px;
