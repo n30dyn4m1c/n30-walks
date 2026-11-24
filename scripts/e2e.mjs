@@ -44,13 +44,9 @@ async function startServer() {
   return { url: 'http://localhost:4319', stop: () => proc.kill() };
 }
 
-async function holdFinish(page) {
-  const btn = page.getByRole('button', { name: 'Hold to finish' });
-  const box = await btn.boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await sleep(1200);
-  await page.mouse.up();
+async function finishWalk(page) {
+  await page.getByRole('button', { name: 'Finish' }).click();
+  await page.getByRole('button', { name: 'Save walk' }).click();
 }
 
 const server = await startServer();
@@ -74,7 +70,7 @@ try {
   await page.goto(`${server.url}/record`);
   await page.getByText(/GPS ±\d+ m/).waitFor({ timeout: 15000 });
   check(true, 'web geolocation fix acquired');
-  await page.getByRole('button', { name: 'START' }).click();
+  await page.getByRole('button', { name: 'Start walk' }).click();
   // Walk north ~3 m/s for 30 s via mocked geolocation updates.
   for (let i = 1; i <= 30; i++) {
     await context.setGeolocation({ latitude: START.latitude + (i * 3) / 111320, longitude: START.longitude, accuracy: 5 });
@@ -83,19 +79,19 @@ try {
   await page.screenshot({ path: `${OUT}/02-recording-web-gps.png` });
   const distText = await page.locator('.stat.lg .value').first().innerText();
   check(parseFloat(distText) > 0.05, `live distance from web GPS updated (${distText})`);
-  await holdFinish(page);
+  await finishWalk(page);
   await page.waitForURL(/\/activity\//, { timeout: 30000 });
   check(true, 'web-GPS walk saved and opened');
 
   // ---------- 3. Simulated walk ----------
   await page.goto(`${server.url}/record`);
-  await page.getByRole('button', { name: 'Simulate a walk' }).click();
+  await page.getByRole('button', { name: 'Test with simulator' }).click();
   await page.locator('.sheet input').fill('1.6');
   await page.getByRole('tab', { name: '30×' }).click();
   await page.getByRole('button', { name: 'Start simulated walk' }).click();
   await page.getByText('Simulated route complete').waitFor({ timeout: 120000 });
   await page.screenshot({ path: `${OUT}/03-recording-simulated.png` });
-  await holdFinish(page);
+  await finishWalk(page);
   await page.waitForURL(/\/activity\//, { timeout: 30000 });
   const activityUrl = page.url();
   await sleep(6000); // terrain + tiles

@@ -24,7 +24,7 @@ function Nav() {
     <nav className="nav" aria-label="Main">
       <NavLink to="/" end><Icon name="home" />Today</NavLink>
       <NavLink to="/routes"><Icon name="routes" />Routes</NavLink>
-      <NavLink to="/record" aria-label="Record a walk"><div className={`rec ${live ? 'live' : ''}`}><Icon name="walk" size={28} stroke={2.2} /></div></NavLink>
+      <NavLink to="/record"><div className={`rec ${live ? 'live' : ''}`}><Icon name="walk" size={26} stroke={2.2} /></div>{live ? 'Walking' : 'Record'}</NavLink>
       <NavLink to="/history"><Icon name="history" />History</NavLink>
       <NavLink to="/progress"><Icon name="progress" />Progress</NavLink>
     </nav>
