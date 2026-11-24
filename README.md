@@ -79,6 +79,8 @@ Types are in `src/types.ts`. Storage is in `src/db/db.ts`.
 | P2 | PWA install and offline shell | ✅ |
 | Next | Offline map tile packs; native H.264 fallback encoder; Health Connect / HealthKit step counts; audio cues; widget | ⏳ open |
 
+Open bugs, reliability work and UI/UX improvements from the code review are tracked in [`docs/REVIEW.md`](docs/REVIEW.md), with a status per item.
+
 ---
 
 ## 4. Code layout
