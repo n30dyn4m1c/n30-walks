@@ -53,14 +53,21 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
   cfgRef.current = cfg;
   const plan = useMemo<FlyoverPlan>(() => buildFlyoverPlan(track.points), [track]);
 
-  // Persist look & feel (not the per-walk title) as the user's default.
+  // Persist look & feel (not the per-walk title) as the user's default. Sliders fire on
+  // every input event, so the write is debounced, and flushed when leaving Studio.
+  const pendingSave = useRef<number | null>(null);
+  const flushSave = useCallback(() => {
+    if (pendingSave.current == null) return;
+    window.clearTimeout(pendingSave.current);
+    pendingSave.current = null;
+    const { title: _t, ...rest } = cfgRef.current;
+    updateSettings({ overlay: { ...rest, title: '' } }).catch(() => {});
+  }, []);
+  useEffect(() => flushSave, [flushSave]);
   const patch = (p: Partial<OverlayConfig>) => {
-    setCfg((c) => {
-      const next = { ...c, ...p };
-      const { title: _t, ...rest } = next;
-      updateSettings({ overlay: { ...settings.overlay, ...rest, title: '' } });
-      return next;
-    });
+    setCfg((c) => ({ ...c, ...p }));
+    if (pendingSave.current != null) window.clearTimeout(pendingSave.current);
+    pendingSave.current = window.setTimeout(flushSave, 300);
   };
   // Settings arrive asynchronously from IndexedDB: adopt the saved look once.
   const hydrated = useRef(false);
@@ -314,11 +321,11 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
           <div className="card stack">
             <h3>Video</h3>
             <div className="field"><label>Length</label>
-              <Segmented value={String(cfg.videoSeconds) as '10' | '15' | '20' | '30'} onChange={(v) => patch({ videoSeconds: Number(v) as OverlayConfig['videoSeconds'] })}
+              <Segmented label="Video length" value={String(cfg.videoSeconds) as '10' | '15' | '20' | '30'} onChange={(v) => patch({ videoSeconds: Number(v) as OverlayConfig['videoSeconds'] })}
                 options={[{ value: '10', label: '10s' }, { value: '15', label: '15s' }, { value: '20', label: '20s' }, { value: '30', label: '30s' }]} />
             </div>
             <div className="field"><label>Quality</label>
-              <Segmented value={cfg.quality} onChange={(v) => patch({ quality: v })} options={[{ value: '1080p', label: '1080×1920' }, { value: '720p', label: '720×1280 (faster)' }]} />
+              <Segmented label="Video quality" value={cfg.quality} onChange={(v) => patch({ quality: v })} options={[{ value: '1080p', label: '1080×1920' }, { value: '720p', label: '720×1280 (faster)' }]} />
             </div>
             <p className="faint small" style={{ margin: 0 }}>Rendered frame-by-frame at 30 fps, H.264 MP4, sized under 16 MB so WhatsApp posts it without trimming or heavy recompression.</p>
           </div>

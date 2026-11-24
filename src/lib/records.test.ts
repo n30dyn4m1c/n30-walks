@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bucketize, computeRecords, dayStreak, goalProgress, periodStart } from './records';
+import { bucketize, computeRecords, countedWalks, dayStreak, goalProgress, periodStart, recordsSetBy } from './records';
 import type { Activity } from '../types';
 
 const day = 86_400_000;
@@ -39,5 +39,13 @@ describe('records', () => {
     const b = bucketize(list, 'distance', 'week', 4, now);
     expect(b).toHaveLength(4);
     expect(b[3].value).toBe(12000);
+  });
+
+  it('ignores demo and simulated walks once a real walk exists', () => {
+    const demo = { ...act('d', now, 9000, 400), source: 'demo' as const };
+    const sim = { ...act('s', now, 9000, 300), source: 'simulated' as const };
+    expect(countedWalks([demo, sim]).map((a) => a.id)).toEqual(['d', 's']);
+    expect(countedWalks([...list, demo, sim]).map((a) => a.id)).toEqual(['a', 'b', 'c']);
+    expect(recordsSetBy('s', [...list, demo, sim])).toEqual([]);
   });
 });

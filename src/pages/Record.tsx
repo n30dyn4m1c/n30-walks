@@ -6,7 +6,7 @@ import type maplibregl from 'maplibre-gl';
 import { MapView } from '../components/MapView';
 import { DraftCard } from '../components/DraftCard';
 import { Icon } from '../components/Icon';
-import { Sheet, Stat, StylePicker, Segmented, useSettings, useToast } from '../components/ui';
+import { Sheet, Stat, StylePicker, Segmented, useMapStyle, useSettings, useToast } from '../components/ui';
 import { db } from '../db/db';
 import { recorder, useRecorder, elapsedSeconds, UNFINISHED_DRAFT_MESSAGE } from '../tracking/recorder';
 import { isNative } from '../tracking/providers';
@@ -14,7 +14,6 @@ import { addRouteLayers, setUserPosition, lineFeature, setData } from '../lib/ma
 import { fmtDistance, fmtDuration, fmtPace, distanceUnit, paceUnit, fmtDistance as fd } from '../lib/format';
 import { proceduralLoop, DEMO_START } from '../lib/demo';
 import type { LngLat } from '../lib/geo';
-import type { MapStyleId } from '../types';
 
 function accuracyClass(acc?: number) {
   if (acc == null) return '';
@@ -29,7 +28,7 @@ export function RecordPage() {
   const routes = useLiveQuery(() => db.routes.orderBy('updatedAt').reverse().toArray(), []);
   const draft = useLiveQuery(() => db.drafts.get('draft'), []);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const [styleId, setStyleId] = useState<MapStyleId>(settings.defaultMapStyle);
+  const [styleId, setStyleId] = useMapStyle(settings);
   const [follow, setFollow] = useState(true);
   const [simOpen, setSimOpen] = useState(false);
   const [routeOpen, setRouteOpen] = useState(false);
@@ -215,7 +214,7 @@ export function RecordPage() {
             <div className="field"><label>Loop distance (km)</label><input className="input" inputMode="decimal" value={simKm} onChange={(e) => setSimKm(e.target.value)} /></div>
           )}
           <div className="field"><label>Speed</label>
-            <Segmented value={simSpeed} onChange={setSimSpeed} options={[{ value: '5', label: '5×' }, { value: '10', label: '10×' }, { value: '30', label: '30×' }]} />
+            <Segmented label="Simulation speed" value={simSpeed} onChange={setSimSpeed} options={[{ value: '5', label: '5×' }, { value: '10', label: '10×' }, { value: '30', label: '30×' }]} />
           </div>
           <button className="btn primary block" onClick={startSim}>Start simulated walk</button>
         </div>

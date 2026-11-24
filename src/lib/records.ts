@@ -2,7 +2,7 @@
  * Personal records, goal progress and analytics aggregation.
  * Everything here is derived from Activity summaries (cheap; no tracks needed).
  */
-import type { Activity, Goal, GoalMetric, GoalPeriod } from '../types';
+import type { Activity, ActivitySource, Goal, GoalMetric, GoalPeriod } from '../types';
 import { BEST_EFFORT_DISTANCES } from './stats';
 
 export interface PersonalRecord {
@@ -23,6 +23,20 @@ export const EFFORT_LABELS: Record<string, string> = {
   '10000': 'Fastest 10 km',
   '21097.5': 'Fastest half marathon',
 };
+
+/** Sources that aren't real walks: seeded demo data and the developer simulator. */
+const PRACTICE_SOURCES: ActivitySource[] = ['demo', 'simulated'];
+export const isPracticeWalk = (a: Activity) => PRACTICE_SOURCES.includes(a.source);
+
+/**
+ * The walks that count toward records, goals, streaks and totals: real walks only.
+ * Until the first real walk exists, demo and simulated walks stand in, so a fresh
+ * install with demo data still has something to show.
+ */
+export function countedWalks(activities: Activity[]): Activity[] {
+  const real = activities.filter((a) => !isPracticeWalk(a));
+  return real.length ? real : activities;
+}
 
 /** Compute all-time PRs. Ties go to the earliest activity. */
 export function computeRecords(activities: Activity[]): PersonalRecord[] {
@@ -54,7 +68,7 @@ export function computeRecords(activities: Activity[]): PersonalRecord[] {
 
 /** Records the given activity set (or tied) at the time it was recorded — for "New PR" badges. */
 export function recordsSetBy(activityId: string, activities: Activity[]): PersonalRecord[] {
-  return computeRecords(activities).filter((r) => r.activityId === activityId);
+  return computeRecords(countedWalks(activities)).filter((r) => r.activityId === activityId);
 }
 
 // ---------- periods ----------

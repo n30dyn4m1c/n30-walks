@@ -7,6 +7,7 @@ Each item has a status so work can continue across sessions.
 
 - **Reviewed at:** `4f7b596`.
 - **First fix round:** PR #5, merged as `4182674`.
+- **Second fix round:** action-plan steps 1–3 (M2, M3, M4, M8, M9, M10 and the accessibility batch).
 - **How to continue:** pick the next ⬜ item from the [action plan](#action-plan) and change its status here in the same PR as the fix.
 
 ---
@@ -44,15 +45,15 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 | ID | Issue | Where | Fix | Status |
 |---|---|---|---|---|
 | M1 | Overlapping `acquire()` calls leaked GPS watchers. | `recorder.ts` | Generation token. | ✅ |
-| M2 | **"Default map" setting is ignored.** `useState(settings.defaultMapStyle)` captures `DEFAULT_SETTINGS` before the live query resolves. | `Record.tsx`, `Activity.tsx`, `Routes.tsx` | Adopt the setting once it loads, like Studio's `hydrated` ref, or load settings before the first render. | ⬜ |
-| M3 | **Studio `patch()` writes settings from inside a `setCfg` updater**, on every slider `input` event. | `Studio.tsx` | Debounce the save (~300 ms) outside the updater. `updateSettings` is already transactional. | 🟡 |
-| M4 | **Routes page redraws the map on every render**, including each keystroke in the name field. `useEffect(() => draw(...))` has no dependency array. | `Routes.tsx` | Add real dependencies. | ⬜ |
+| M2 | **"Default map" setting is ignored.** `useState(settings.defaultMapStyle)` captures `DEFAULT_SETTINGS` before the live query resolves. | `Record.tsx`, `Activity.tsx`, `Routes.tsx` | Adopt the setting once it loads, like Studio's `hydrated` ref, or load settings before the first render. | ✅ `useMapStyle(settings)` in `ui.tsx` adopts the saved default once loaded, unless the user already picked a style. |
+| M3 | **Studio `patch()` writes settings from inside a `setCfg` updater**, on every slider `input` event. | `Studio.tsx` | Debounce the save (~300 ms) outside the updater. `updateSettings` is already transactional. | ✅ Debounced 300 ms outside the updater; a pending save is flushed when leaving Studio. |
+| M4 | **Routes page redraws the map on every render**, including each keystroke in the name field. `useEffect(() => draw(...))` has no dependency array. | `Routes.tsx` | Add real dependencies. | ✅ |
 | M5 | **Map fallback is incomplete:** it only triggers before the style loads; Relief is blank offline; `styleReady()` reads the private `style._loaded`. | `MapView.tsx`, `mapStyles.ts` | Handle later tile errors; show an "offline, recording unaffected" hint; pin `maplibre-gl` to `~5.24`. | ⬜ |
 | M6 | **Service worker:** fixed cache name means old chunks pile up; nothing is precached, so the lazy Studio chunk fails offline. | `public/sw.js` | Build-time precache manifest (e.g. `vite-plugin-pwa` / Workbox `injectManifest`) with a hashed cache name. | ⬜ |
 | M7 | **Backup import isn't validated**; a malformed file crashes pages later. | `db.ts` `importBackup` | Check version and shape; only import tracks for activities that exist. | ⬜ |
-| M8 | **Demo and simulated walks count toward PRs, goals and streaks**; there is no way to remove only demo walks. | `records.ts`, `Home.tsx`, `Settings.tsx` | Exclude `demo`/`simulated` sources by default; add a "Remove demo walks" button. | ⬜ |
-| M9 | **The privacy claim is broader than the behaviour.** Route planning sends waypoints to `routing.openstreetmap.de`; map tiles reveal the area to OpenFreeMap, CARTO, Esri and AWS. | README, Settings | One line in Settings → Your data listing these services. | ⬜ |
-| M10 | **CI publishes `apk-latest` from every branch.** | `.github/workflows/android-apk.yml` | Publish only from the default branch; upload an artifact elsewhere. | ⬜ |
+| M8 | **Demo and simulated walks count toward PRs, goals and streaks**; there is no way to remove only demo walks. | `records.ts`, `Home.tsx`, `Settings.tsx` | Exclude `demo`/`simulated` sources by default; add a "Remove demo walks" button. | ✅ `countedWalks()` drops demo and simulated walks from records, goals, streaks and totals once a real walk exists (until then they stand in, so demo data still shows). Progress says how many were left out. Settings has "Remove demo walks". |
+| M9 | **The privacy claim is broader than the behaviour.** Route planning sends waypoints to `routing.openstreetmap.de`; map tiles reveal the area to OpenFreeMap, CARTO, Esri and AWS. | README, Settings | One line in Settings → Your data listing these services. | ✅ |
+| M10 | **CI publishes `apk-latest` from every branch.** | `.github/workflows/android-apk.yml` | Publish only from the default branch; upload an artifact elsewhere. | ✅ Every build uploads an artifact; only the default branch publishes `apk-latest`. |
 
 ## Lower
 
@@ -118,15 +119,16 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 ### Navigation, Home, Settings
 - ⬜ Home goal: a carousel or "primary goal" when there are several; label the implicit 20 km/week goal as a suggestion.
 - ✅ Settings: last backup date, storage protection, "Saved · recalculated N walks".
-- ⬜ Settings: "Remove demo walks" (M8), privacy note (M9), GPS accuracy as Strict / Balanced / Lenient.
+- ✅ Settings: "Remove demo walks" (M8), privacy note (M9).
+- ⬜ Settings: GPS accuracy as Strict / Balanced / Lenient.
 
 ### Accessibility
-- ⬜ Remove `user-scalable=no` from `index.html` (blocks zoom, WCAG 1.4.4).
-- ⬜ `--text-3: #6f7c75` is ~4.1:1 on `--bg-elev`. Raise it to ~`#8a978f` for AA contrast.
-- ⬜ `Sheet`: move focus into the dialog, trap focus, return focus on close, add `aria-labelledby`. Or use `<dialog>`.
-- ⬜ Clickable `div` cards (route cards in `Routes.tsx`, goal cards in `Progress.tsx`) should be `<button>` elements.
-- ⬜ `Switch` without `label` in Settings and Routes: associate the visible text.
-- ⬜ `Segmented` uses `role="tab"` without tab panels: use `radiogroup`/`radio` or `aria-pressed`. `StylePicker` swatches need `aria-pressed`.
+- ✅ Remove `user-scalable=no` from `index.html` (blocks zoom, WCAG 1.4.4).
+- ✅ `--text-3: #6f7c75` is ~4.1:1 on `--bg-elev`. Raise it to ~`#8a978f` for AA contrast.
+- ✅ `Sheet`: move focus into the dialog, trap focus, return focus on close, add `aria-labelledby`. Or use `<dialog>`.
+- ✅ Clickable `div` cards (route cards in `Routes.tsx`, goal cards in `Progress.tsx`) should be `<button>` elements. Also added a global `:focus-visible` ring.
+- ✅ `Switch` without `label` in Settings and Routes: associate the visible text.
+- ✅ `Segmented` uses `role="tab"` without tab panels: use `radiogroup`/`radio` or `aria-pressed`. `StylePicker` swatches need `aria-pressed`.
 - ⬜ Screen-reader announcement every km while recording.
 
 ---
@@ -135,9 +137,9 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 
 Next suggested order (all ⬜ items above):
 
-1. M2 default map style, M4 Routes deps, M3 debounce. Small, quick wins.
-2. Accessibility batch (viewport, contrast, Sheet focus, buttons, labels).
-3. M8 demo exclusion + "Remove demo walks"; M9 privacy note; M10 CI branch gating.
+1. ~~M2 default map style, M4 Routes deps, M3 debounce.~~ Done.
+2. ~~Accessibility batch (viewport, contrast, Sheet focus, buttons, labels).~~ Done; km announcements still open.
+3. ~~M8 demo exclusion + "Remove demo walks"; M9 privacy note; M10 CI branch gating.~~ Done.
 4. Recording UX: GPS-denied card, hold-to-finish, recording pill, route remaining / off-route.
 5. M7 import validation; M6 precaching service worker.
 6. T6 ESLint; T5 diagnostics log; T7 Mediabunny migration.
@@ -148,7 +150,7 @@ Next suggested order (all ⬜ items above):
 ## Testing notes
 
 ### Verified
-- `npm test` passes: 41 tests, including the recorder integration tests and the gap, pause and parity stats tests.
+- `npm test` passes: 42 tests (round 2 added the demo/simulated exclusion test), including the recorder integration tests and the gap, pause and parity stats tests.
 - `npm run build` passes.
 - `npm run e2e` passes end to end (all checks), run in a sandbox with map and terrain hosts blocked:
   - home; web-GPS record → save; simulated 1.6 km loop (recorded 1.67 km); splits; elevation profile.
@@ -157,6 +159,8 @@ Next suggested order (all ⬜ items above):
   - Fastest-1 km PR computed; history persists across reload; planned route saved.
   - The video took ~56 min here (software WebGL, ~11 s per frame); on a phone or desktop it is minutes.
 - ⬜ The same run logged two non-fatal console errors: `Failed to load module script … MIME type "text/html"`. A JS chunk request got the HTML fallback instead. This is probably a stale-chunk/service-worker issue (see M6). Unconfirmed; reproduce by reloading after a rebuild.
+
+- Round 2 browser smoke test (headless Chromium): default map adopted on Routes, `Segmented` exposes radios, switches are labelled, `Sheet` takes, traps and returns focus, demo walks stand in then are removed by "Remove demo walks", zoom allowed, no page errors. The full `npm run e2e` was not re-run (the video export takes ~1 h here); its selectors were updated for `role="radio"` and its PR check now expects the simulated walk to be excluded.
 
 ### Needs a real device
 1. Native share-sheet save of backup, GPX and MP4 on Android and iOS, including the chunked `appendFile` writes on Android.
@@ -173,5 +177,5 @@ Next suggested order (all ⬜ items above):
 
 ### Open questions for the owner
 - **Gap policy:** implemented as "count the distance, credit time at the slowest moving speed". Change this if you'd rather exclude gap distance entirely.
-- Should simulated and demo walks ever count toward goals and records (M8)?
+- M8 is implemented as "demo/simulated walks count only until the first real walk". Say if you'd rather they never count.
 - Is the web/PWA build a real target for pocket tracking, or a demo? This decides how much effort goes into the web lock-screen UX.

@@ -120,6 +120,16 @@ export async function deleteActivity(id: string): Promise<void> {
   });
 }
 
+/** Delete every walk (and its track) recorded from one of `sources`, e.g. demo walks. */
+export async function deleteActivitiesBySource(sources: Activity['source'][]): Promise<number> {
+  return db.transaction('rw', db.activities, db.tracks, async () => {
+    const ids = (await db.activities.filter((a) => sources.includes(a.source)).primaryKeys()) as string[];
+    await db.activities.bulkDelete(ids);
+    await db.tracks.bulkDelete(ids);
+    return ids.length;
+  });
+}
+
 /** Full JSON backup of all user data (for export / device migration). */
 export async function exportBackup(): Promise<string> {
   const [activities, tracks, routes, goals, settings] = await Promise.all([

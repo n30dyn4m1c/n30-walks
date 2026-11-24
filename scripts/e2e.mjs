@@ -87,7 +87,7 @@ try {
   await page.goto(`${server.url}/record`);
   await page.getByRole('button', { name: 'Test with simulator' }).click();
   await page.locator('.sheet input').fill('1.6');
-  await page.getByRole('tab', { name: '30×' }).click();
+  await page.getByRole('radio', { name: '30×' }).click();
   await page.getByRole('button', { name: 'Start simulated walk' }).click();
   await page.getByText('Simulated route complete').waitFor({ timeout: 120000 });
   await page.screenshot({ path: `${OUT}/03-recording-simulated.png` });
@@ -113,8 +113,8 @@ try {
   await sleep(4000);
   await page.screenshot({ path: `${OUT}/06-studio-mid.png` });
   // Config for a fast export
-  await page.getByRole('tab', { name: `${SECONDS}s` }).click();
-  await page.getByRole('tab', { name: QUALITY === '720p' ? /720×1280/ : /^1080×1920$/ }).click();
+  await page.getByRole('radio', { name: `${SECONDS}s` }).click();
+  await page.getByRole('radio', { name: QUALITY === '720p' ? /720×1280/ : /^1080×1920$/ }).click();
 
   // Image export
   await page.getByRole('button', { name: /Image \(JPEG\)/ }).click();
@@ -156,7 +156,10 @@ try {
   await page.goto(`${server.url}/progress`);
   await page.getByText('Personal records').waitFor();
   await page.screenshot({ path: `${OUT}/08-progress.png`, fullPage: true });
-  check(await page.getByText('Fastest 1 km').isVisible(), 'PR: fastest 1 km computed');
+  // The only walk long enough for a 1 km effort is simulated: once a real walk exists,
+  // simulated walks don't count toward records (fastest-1 km logic is unit-tested).
+  check(!(await page.getByText('Fastest 1 km').isVisible()), 'PR: simulated walk excluded from records');
+  check(await page.getByText(/simulated walk isn’t counted/).isVisible(), 'progress notes the excluded simulated walk');
 
   await page.goto(`${server.url}/history`);
   await page.reload();
@@ -167,7 +170,7 @@ try {
   await page.screenshot({ path: `${OUT}/09-history.png` });
 
   await page.goto(`${server.url}/routes`);
-  await page.getByRole('tab', { name: 'Plan' }).click();
+  await page.getByRole('radio', { name: 'Plan' }).click();
   await sleep(2500);
   const map = await page.locator('.map-wrap').boundingBox();
   for (const [fx, fy] of [[0.3, 0.4], [0.6, 0.35], [0.65, 0.7]]) { await page.mouse.click(map.x + map.width * fx, map.y + map.height * fy); await sleep(400); }

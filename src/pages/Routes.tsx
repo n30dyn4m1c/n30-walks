@@ -11,7 +11,7 @@ import { db } from '../db/db';
 import { MapView } from '../components/MapView';
 import { Icon } from '../components/Icon';
 import { RouteThumb, ElevationChart } from '../components/Charts';
-import { Segmented, StylePicker, Switch, useSettings, useToast } from '../components/ui';
+import { Segmented, StylePicker, Switch, useMapStyle, useSettings, useToast } from '../components/ui';
 import { addRouteLayers, fc, pointFeature, setData } from '../lib/mapLayers';
 import { routeThrough, straightRoute, generateLoop, type RouteResult } from '../lib/routing';
 import { sampleElevations } from '../lib/elevation';
@@ -21,7 +21,7 @@ import { fmtDistance, fmtElevation, uid, M_PER_MI } from '../lib/format';
 import { routeToGpx } from '../lib/gpx';
 import { saveBlob, slug } from '../media/share';
 import { DEMO_START } from '../lib/demo';
-import type { MapStyleId, Route } from '../types';
+import type { Route } from '../types';
 
 type Mode = 'saved' | 'plan' | 'discover';
 const LOOP_COLORS = ['#ff5a36', '#4ea1ff', '#b8f34a'];
@@ -50,7 +50,7 @@ export function RoutesPage() {
   const nav = useNavigate();
   const routes = useLiveQuery(() => db.routes.orderBy('updatedAt').reverse().toArray(), []);
   const [mode, setMode] = useState<Mode>('saved');
-  const [styleId, setStyleId] = useState<MapStyleId>(settings.defaultMapStyle);
+  const [styleId, setStyleId] = useMapStyle(settings);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [here, setHere] = useState<LngLat | null>(null);
 
@@ -106,7 +106,9 @@ export function RoutesPage() {
     setData(map, 'start-pt', fc(mode === 'discover' ? [pointFeature(here ?? (map.getCenter().toArray() as LngLat))] : []));
     if (!map.getLayer('start-pt')) map.addLayer({ id: 'start-pt', type: 'circle', source: 'start-pt', paint: { 'circle-radius': 9, 'circle-color': '#22c55e', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
   };
-  useEffect(() => { if (mapRef.current) draw(mapRef.current); });
+  // Redraw only when what's drawn changes (not on every keystroke in the name field).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (mapRef.current) draw(mapRef.current); }, [mode, loops, picked, planned, selected, waypoints, here, settings.overlay.routeColor]);
 
   const fit = (g: LngLat[]) => {
     const b = bbox(g);
@@ -156,7 +158,7 @@ export function RoutesPage() {
       <div className="map-wrap" style={{ height: '50vh', minHeight: 300, margin: '0 -16px', borderRadius: 0, borderLeft: 0, borderRight: 0, borderTop: 0 }}>
         <MapView styleId={styleId} initial={{ center, zoom: here ? 14 : 13 }} onReady={(m) => { mapRef.current = m; draw(m); }} onClick={onMapClick} />
         <div className="map-float" style={{ top: 'calc(12px + var(--safe-t))', left: 12, right: 12 }}>
-          <Segmented value={mode} onChange={(m) => { setMode(m); setSelected(null); }} options={[{ value: 'saved', label: 'Saved' }, { value: 'plan', label: 'Plan' }, { value: 'discover', label: 'Discover' }]} />
+          <Segmented label="Routes view" value={mode} onChange={(m) => { setMode(m); setSelected(null); }} options={[{ value: 'saved', label: 'Saved' }, { value: 'plan', label: 'Plan' }, { value: 'discover', label: 'Discover' }]} />
         </div>
         <div className="map-float" style={{ bottom: 12, left: 12 }}><StylePicker value={styleId} onChange={setStyleId} /></div>
         {mode === 'plan' && waypoints.length === 0 && <div className="map-float gps-pill" style={{ bottom: 64, left: '50%', transform: 'translateX(-50%)' }}>Tap the map to add waypoints</div>}
@@ -175,8 +177,8 @@ export function RoutesPage() {
 
         {mode === 'plan' && (
           <div className="card stack">
-            <div className="list-row"><span>Snap to walking paths</span><Switch checked={snap} onChange={setSnap} /></div>
-            <div className="list-row"><span>Return to start (loop)</span><Switch checked={loopBack} onChange={setLoopBack} /></div>
+            <div className="list-row"><span>Snap to walking paths</span><Switch checked={snap} onChange={setSnap} label="Snap to walking paths" /></div>
+            <div className="list-row"><span>Return to start (loop)</span><Switch checked={loopBack} onChange={setLoopBack} label="Return to start (loop)" /></div>
             {planned && !planned.snapped && snap && <div className="banner">Routing service unavailable — using straight lines.</div>}
             <div className="row">
               <button className="btn sm" onClick={() => setWaypoints((w) => w.slice(0, -1))} disabled={!waypoints.length}><Icon name="undo" size={16} /> Undo</button>
@@ -216,20 +218,22 @@ export function RoutesPage() {
           <div className="stack">
             {!routes?.length && <div className="card empty">No saved routes yet. Plan one, discover a loop, or save a past walk as a route.</div>}
             {routes?.map((r) => (
-              <div key={r.id} className={`card tight row link`} style={{ gap: 14, borderColor: selected?.id === r.id ? 'var(--accent)' : undefined }} onClick={() => { setSelected(r); fit(r.geometry); }}>
-                <RouteThumb coords={simplifyToCount(r.geometry, 80)} color="#4ea1ff" />
-                <div className="grow">
-                  <h3>{r.name}</h3>
-                  <div className="faint small">{fmtDistance(r.distanceM, u, true)}{r.elevGainM != null ? ` · ↑ ${fmtElevation(r.elevGainM, u, true)}` : ''} · {r.source}</div>
-                  {selected?.id === r.id && (
-                    <div className="row wrap" style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
-                      <button className="btn primary sm" onClick={() => nav(`/record?route=${r.id}`)}><Icon name="walk" size={16} /> Walk it</button>
-                      <button className="btn sm" onClick={() => saveBlob(new Blob([routeToGpx(r.name, r.geometry)], { type: 'application/gpx+xml' }), `${slug(r.name)}.gpx`).catch((e) => toast(`Could not save the file: ${(e as Error).message}`))}><Icon name="download" size={16} /> GPX</button>
-                      <button className="btn sm" onClick={async () => { const n = prompt('Rename route', r.name); if (n) await db.routes.update(r.id, { name: n, updatedAt: Date.now() }); }}><Icon name="edit" size={16} /></button>
-                      <button className="btn sm danger" onClick={async () => { if (confirm('Delete route?')) { await db.routes.delete(r.id); setSelected(null); } }}><Icon name="trash" size={16} /></button>
-                    </div>
-                  )}
-                </div>
+              <div key={r.id} className="card tight stack" style={{ borderColor: selected?.id === r.id ? 'var(--accent)' : undefined }}>
+                <button type="button" className="card-btn" aria-pressed={selected?.id === r.id} onClick={() => { setSelected(r); fit(r.geometry); }}>
+                  <RouteThumb coords={simplifyToCount(r.geometry, 80)} color="#4ea1ff" />
+                  <div className="grow">
+                    <h3>{r.name}</h3>
+                    <div className="faint small">{fmtDistance(r.distanceM, u, true)}{r.elevGainM != null ? ` · ↑ ${fmtElevation(r.elevGainM, u, true)}` : ''} · {r.source}</div>
+                  </div>
+                </button>
+                {selected?.id === r.id && (
+                  <div className="row wrap">
+                    <button className="btn primary sm" onClick={() => nav(`/record?route=${r.id}`)}><Icon name="walk" size={16} /> Walk it</button>
+                    <button className="btn sm" onClick={() => saveBlob(new Blob([routeToGpx(r.name, r.geometry)], { type: 'application/gpx+xml' }), `${slug(r.name)}.gpx`).catch((e) => toast(`Could not save the file: ${(e as Error).message}`))}><Icon name="download" size={16} /> GPX</button>
+                    <button className="btn sm" aria-label="Rename route" onClick={async () => { const n = prompt('Rename route', r.name); if (n) await db.routes.update(r.id, { name: n, updatedAt: Date.now() }); }}><Icon name="edit" size={16} /></button>
+                    <button className="btn sm danger" aria-label="Delete route" onClick={async () => { if (confirm('Delete route?')) { await db.routes.delete(r.id); setSelected(null); } }}><Icon name="trash" size={16} /></button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
