@@ -20,30 +20,6 @@ function accuracyClass(acc?: number) {
   return acc <= 12 ? 'good' : acc <= 30 ? 'ok' : 'bad';
 }
 
-/** Hold-to-finish button: prevents ending a walk by accident. */
-function HoldButton({ onDone, children }: { onDone: () => void; children: React.ReactNode }) {
-  const [p, setP] = useState(0);
-  const raf = useRef(0);
-  const start = () => {
-    const t0 = performance.now();
-    const tick = () => {
-      const f = Math.min(1, (performance.now() - t0) / 800);
-      setP(f);
-      if (f >= 1) { onDone(); setP(0); return; }
-      raf.current = requestAnimationFrame(tick);
-    };
-    raf.current = requestAnimationFrame(tick);
-  };
-  const cancel = () => { cancelAnimationFrame(raf.current); setP(0); };
-  return (
-    <button className="round-btn stop" onPointerDown={start} onPointerUp={cancel} onPointerLeave={cancel} aria-label="Hold to finish"
-      onKeyDown={(e) => { if (e.key === 'Enter') onDone(); }}>
-      <div className="fill" style={{ transform: `scaleY(${p})` }} />
-      <span>{children}</span>
-    </button>
-  );
-}
-
 export function RecordPage() {
   const settings = useSettings();
   const rec = useRecorder();
@@ -52,11 +28,11 @@ export function RecordPage() {
   const routes = useLiveQuery(() => db.routes.orderBy('updatedAt').reverse().toArray(), []);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [styleId, setStyleId] = useState<MapStyleId>(settings.defaultMapStyle);
-  const [terrain, setTerrain] = useState(false);
   const [follow, setFollow] = useState(true);
   const [simOpen, setSimOpen] = useState(false);
   const [routeOpen, setRouteOpen] = useState(false);
   const [stylesOpen, setStylesOpen] = useState(false);
+  const [finishOpen, setFinishOpen] = useState(false);
   const [simKm, setSimKm] = useState('3');
   const [simSpeed, setSimSpeed] = useState<'5' | '10' | '30'>('10');
   const [params] = useSearchParams();
@@ -136,9 +112,16 @@ export function RecordPage() {
     <div className="page full">
       <MapView
         styleId={styleId}
-        terrain={terrain}
         initial={{ center: here ?? DEMO_START, zoom: here ? 16 : 3 }}
-        onReady={(m) => { mapRef.current = m; m.setPadding({ top: 90, bottom: Math.round(window.innerHeight * 0.45), left: 0, right: 0 }); drawPlanned(m); drawLive(m); m.on('dragstart', () => setFollow(false)); }}
+        onReady={(m) => {
+          mapRef.current = m;
+          m.setPadding({ top: 90, bottom: Math.round(window.innerHeight * 0.45), left: 0, right: 0 });
+          drawPlanned(m); drawLive(m);
+          m.on('dragstart', () => setFollow(false));
+          // The first fix may have arrived before the map was ready.
+          const f = recorder.getState().lastFix;
+          if (f && firstFix.current) { m.jumpTo({ center: [f.lon, f.lat], zoom: 16.2 }); firstFix.current = false; }
+        }}
       />
 
       {/* Top bar */}
@@ -150,59 +133,67 @@ export function RecordPage() {
             {rec.source === 'simulated' && <span className="badge">SIM {simulated?.speedup}×</span>}
           </div>
           <div className="row" style={{ gap: 8 }}>
-            <button className={`icon-btn ${terrain ? 'active' : ''}`} onClick={() => setTerrain(!terrain)} aria-label="Toggle 3D"><Icon name="cube" size={20} /></button>
-            <button className="icon-btn" onClick={() => setStylesOpen(!stylesOpen)} aria-label="Map style"><Icon name="layers" size={20} /></button>
-            <button className={`icon-btn ${follow ? 'active' : ''}`} onClick={() => setFollow(true)} aria-label="Follow my position"><Icon name="locate" size={20} /></button>
+            {!follow && here && <button className="map-chip" onClick={() => setFollow(true)}><Icon name="locate" size={18} /> Re-center</button>}
+            <button className="map-chip" onClick={() => setStylesOpen(!stylesOpen)} aria-expanded={stylesOpen}><Icon name="layers" size={18} /> Map</button>
           </div>
         </div>
         {stylesOpen && <div className="row" style={{ justifyContent: 'flex-end', marginTop: 10 }}><StylePicker value={styleId} onChange={(v) => { setStyleId(v); setStylesOpen(false); }} /></div>}
         <div className="stack" style={{ marginTop: 10, gap: 8 }}>
           {rec.error && <div className="banner err">{rec.error.message}</div>}
-          {!isNative() && live && rec.source === 'gps' && <div className="banner">Keep this screen open — browsers pause GPS in the background. Install the Android/iOS build for pocket tracking.</div>}
-          {rec.autoPaused && rec.status === 'recording' && <div className="banner">Auto-paused — waiting for movement…</div>}
-          {simulated?.finished && live && <div className="banner">Simulated route complete — hold ■ to finish.</div>}
+          {!isNative() && live && rec.source === 'gps' && <div className="banner">Keep this screen on — the browser stops GPS when the screen locks. Use the Android app for pocket tracking.</div>}
+          {rec.status === 'paused' && <div className="banner">Paused — tap Resume to keep recording.</div>}
+          {rec.autoPaused && rec.status === 'recording' && <div className="banner">Not moving — the clock keeps running, distance doesn't.</div>}
+          {simulated?.finished && live && <div className="banner">Simulated route complete — tap Finish to save it.</div>}
         </div>
       </div>
 
       {/* Bottom panel */}
       <div className="rec-panel">
-        {plannedRoute && <div className="faint small" style={{ textAlign: 'center', marginBottom: 8 }}>Following “{plannedRoute.name}” · {fd(plannedRoute.distanceM, u, true)}</div>}
-        <div style={{ textAlign: 'center' }}>
-          <div className="stat xl"><div className="label">Time</div><div className="value tnum">{fmtDuration(elapsed)}</div></div>
-        </div>
-        <div className="stat-grid" style={{ marginTop: 16, textAlign: 'center' }}>
-          <Stat label="Distance" value={fmtDistance(rec.distanceM, u)} unit={distanceUnit(u)} size="lg" />
-          <Stat label="Pace" value={fmtPace(rec.currentPace, u)} unit={paceUnit(u)} size="lg" />
-          <Stat label="Avg pace" value={fmtPace(avgPace, u)} unit={paceUnit(u)} size="lg" />
-        </div>
-
-        <div className="controls">
-          {!live && rec.status !== 'saving' && (
-            <>
-              <button className="icon-btn" style={{ width: 56, height: 56 }} onClick={() => setRouteOpen(true)} aria-label="Choose a route to follow"><Icon name="routes" /></button>
-              <button className="round-btn go" onClick={() => recorder.start({ routeId })} disabled={!fix}>
-                {fix ? 'START' : <span className="spinner" />}
-              </button>
-              <button className="icon-btn" style={{ width: 56, height: 56 }} onClick={() => setSimOpen(true)} aria-label="Simulate a walk"><Icon name="sim" /></button>
-            </>
-          )}
-          {rec.status === 'recording' && (
-            <>
-              <button className="round-btn pause" onClick={() => recorder.pause()} aria-label="Pause"><Icon name="pause" size={30} stroke={3} /></button>
-              <HoldButton onDone={finish}><Icon name="stop" size={26} fill /></HoldButton>
-            </>
-          )}
-          {rec.status === 'paused' && (
-            <>
-              <button className="round-btn go" onClick={() => recorder.resume()} aria-label="Resume"><Icon name="play" size={30} fill /></button>
-              <HoldButton onDone={finish}><Icon name="stop" size={26} fill /></HoldButton>
-            </>
-          )}
-          {rec.status === 'saving' && <div className="row muted"><span className="spinner" /> Saving walk & fetching elevation…</div>}
-        </div>
-        {live && <div className="faint small" style={{ textAlign: 'center', marginTop: 10 }}>Hold ■ to finish · {rec.points.length} points · {rec.rejected} noisy fixes filtered</div>}
-        {live && rec.status === 'paused' && <div style={{ textAlign: 'center', marginTop: 8 }}><button className="btn ghost sm danger" onClick={() => { if (confirm('Discard this walk?')) recorder.discard().then(() => recorder.acquire()); }}>Discard walk</button></div>}
+        {live || rec.status === 'saving' ? (
+          <>
+            {plannedRoute && <div className="faint small" style={{ textAlign: 'center', marginBottom: 8 }}>Following “{plannedRoute.name}” · {fd(plannedRoute.distanceM, u, true)}</div>}
+            <div style={{ textAlign: 'center' }}>
+              <div className="stat xl"><div className="label">Time</div><div className="value tnum">{fmtDuration(elapsed)}</div></div>
+            </div>
+            <div className="stat-grid" style={{ marginTop: 16, textAlign: 'center' }}>
+              <Stat label="Distance" value={fmtDistance(rec.distanceM, u)} unit={distanceUnit(u)} size="lg" />
+              <Stat label="Pace" value={fmtPace(rec.currentPace, u)} unit={paceUnit(u)} size="lg" />
+              <Stat label="Avg pace" value={fmtPace(avgPace, u)} unit={paceUnit(u)} size="lg" />
+            </div>
+            <div className="controls">
+              {rec.status === 'recording' && (
+                <button className="ctrl-btn pause" onClick={() => recorder.pause()}><Icon name="pause" size={26} stroke={3} /><span>Pause</span></button>
+              )}
+              {rec.status === 'paused' && (
+                <button className="ctrl-btn go" onClick={() => recorder.resume()}><Icon name="play" size={26} fill /><span>Resume</span></button>
+              )}
+              {live && (
+                <button className="ctrl-btn stop" onClick={() => setFinishOpen(true)}><Icon name="stop" size={22} fill /><span>Finish</span></button>
+              )}
+              {rec.status === 'saving' && <div className="row muted"><span className="spinner" /> Saving walk…</div>}
+            </div>
+          </>
+        ) : (
+          <div className="stack" style={{ alignItems: 'center', gap: 14 }}>
+            <button className="start-btn" onClick={() => recorder.start({ routeId })} disabled={!fix}>
+              {fix ? <><Icon name="play" size={22} fill /> Start walk</> : <><span className="spinner" /> Finding your location…</>}
+            </button>
+            <div className="row" style={{ gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+              <button className="chip" onClick={() => setRouteOpen(true)}><Icon name="routes" size={16} /> {plannedRoute ? plannedRoute.name : 'No route'} ▾</button>
+              <button className="chip" onClick={() => setSimOpen(true)}><Icon name="sim" size={16} /> Test with simulator</button>
+            </div>
+          </div>
+        )}
       </div>
+
+      <Sheet open={finishOpen} onClose={() => setFinishOpen(false)} title="Finish this walk?">
+        <div className="stack">
+          <p className="muted small" style={{ margin: 0 }}>{fmtDistance(rec.distanceM, u)} {distanceUnit(u)} in {fmtDuration(elapsed)}</p>
+          <button className="btn primary lg block" onClick={() => { setFinishOpen(false); finish(); }}><Icon name="check" /> Save walk</button>
+          <button className="btn lg block" onClick={() => setFinishOpen(false)}>Keep walking</button>
+          <button className="btn ghost block danger" onClick={() => { if (confirm('Delete this walk? It will not be saved.')) { setFinishOpen(false); recorder.discard().then(() => recorder.acquire()); } }}><Icon name="trash" size={18} /> Discard walk</button>
+        </div>
+      </Sheet>
 
       <Sheet open={simOpen} onClose={() => setSimOpen(false)} title="Simulate a walk">
         <div className="stack">
@@ -217,9 +208,9 @@ export function RecordPage() {
         </div>
       </Sheet>
 
-      <Sheet open={routeOpen} onClose={() => setRouteOpen(false)} title="Follow a route">
+      <Sheet open={routeOpen} onClose={() => setRouteOpen(false)} title="Walk a saved route">
         <div className="stack">
-          <button className={`card tight link row between ${!routeId ? 'on' : ''}`} onClick={() => { setRouteId(undefined); setRouteOpen(false); }}><span>Free walk (no route)</span>{!routeId && <Icon name="check" />}</button>
+          <button className={`card tight link row between ${!routeId ? 'on' : ''}`} onClick={() => { setRouteId(undefined); setRouteOpen(false); }}><span>No route — just walk</span>{!routeId && <Icon name="check" />}</button>
           {routes?.map((r) => (
             <button key={r.id} className="card tight link row between" onClick={() => { setRouteId(r.id); setRouteOpen(false); const m = mapRef.current; if (m) { setFollow(false); const xs = r.geometry.map((c) => c[0]), ys = r.geometry.map((c) => c[1]); m.fitBounds([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], { padding: 60 }); } }}>
               <span>{r.name} <span className="faint small">· {fd(r.distanceM, u, true)}</span></span>{routeId === r.id && <Icon name="check" />}

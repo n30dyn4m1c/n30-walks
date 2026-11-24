@@ -82,8 +82,8 @@ export function ActivityPage() {
           <div className="row between">
             <button className="icon-btn" onClick={() => nav(-1)} aria-label="Back"><Icon name="back" /></button>
             <div className="row" style={{ gap: 8 }}>
-              <button className={`icon-btn ${paceColors ? 'active' : ''}`} onClick={() => setPaceColors(!paceColors)} aria-label="Colour by pace" title="Colour by pace"><Icon name="flame" size={20} /></button>
-              <button className={`icon-btn ${terrain ? 'active' : ''}`} onClick={() => setTerrain(!terrain)} aria-label="Toggle 3D terrain"><Icon name="cube" size={20} /></button>
+              <button className={`map-chip ${paceColors ? 'active' : ''}`} onClick={() => setPaceColors(!paceColors)} aria-pressed={paceColors}><Icon name="flame" size={16} /> Pace</button>
+              <button className={`map-chip ${terrain ? 'active' : ''}`} onClick={() => setTerrain(!terrain)} aria-pressed={terrain}><Icon name="cube" size={16} /> 3D</button>
             </div>
           </div>
         </div>
@@ -97,7 +97,7 @@ export function ActivityPage() {
             <div className="faint small">{fmtDate(activity.startedAt, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · {fmtTime(activity.startedAt)}–{fmtTime(activity.endedAt)}</div>
             {activity.notes && <p className="muted" style={{ marginBottom: 0 }}>{activity.notes}</p>}
           </div>
-          <button className="icon-btn" onClick={() => { setName(activity.name); setNotes(activity.notes ?? ''); setEditOpen(true); }} aria-label="Edit"><Icon name="edit" size={18} /></button>
+          <button className="icon-btn" onClick={() => { setName(activity.name); setNotes(activity.notes ?? ''); setEditOpen(true); }} aria-label="Edit name and notes"><Icon name="edit" size={18} /></button>
         </div>
 
         {prs.length > 0 && (

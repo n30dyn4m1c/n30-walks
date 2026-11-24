@@ -66,7 +66,7 @@ Types are in `src/types.ts`. Storage is in `src/db/db.ts`.
 
 | P | Feature | Status |
 |---|---|---|
-| P0 | GPS recording: filtering, pause/resume, auto-pause indicator, wake lock, crash recovery, hold-to-finish | ✅ |
+| P0 | GPS recording: filtering, pause/resume, auto-pause indicator, wake lock, crash recovery, Finish → Save / Keep walking / Discard sheet | ✅ |
 | P0 | Activity map (pace-coloured route, 3D terrain, style switcher) with full stats, DEM elevation profile linked to the map, and splits | ✅ |
 | P0 | 3D flyover player: intro swoop, chase cam, outro orbit; progressive path; moving marker; live stats overlay; elevation progress chart | ✅ |
 | P0 | WhatsApp Status export: 1080×1920 (or 720p) H.264 MP4 under 16 MB, and a 1080×1920 JPEG; share sheet or download | ✅ |
@@ -140,8 +140,8 @@ Use `--no-open` (for example `node scripts/mobile.mjs android --no-open`) to ski
 
 ## 6. Verification steps
 
-1. **GPS recording (real).** Open **Record** on a phone, allow location, and wait for the green `GPS ±N m` pill. Tap **START** and walk. Time, distance and pace update live, and the route draws behind the blue dot. Pause and resume, then **hold ■** to finish. You land on the saved walk.
-2. **GPS recording (desk).** On **Record**, tap the simulator button (right of START). Choose 2 km at 30× and start. The walk runs in about a minute with realistic noise and occasional glitches; the "noisy fixes filtered" counter shows rejections. When "Simulated route complete" appears, hold ■. Recorded distance should be within about 5% of 2 km. Reloading mid-walk shows "Unfinished walk found" on Today.
+1. **GPS recording (real).** Open **Record** on a phone, allow location, and wait for the green `GPS ±N m` pill. Tap **Start walk** and walk. Time, distance and pace update live, and the route draws behind the blue dot. Pause and resume, then tap **Finish → Save walk**. You land on the saved walk.
+2. **GPS recording (desk).** On **Record**, tap **Test with simulator** (under Start walk). Choose 2 km at 30× and start. The walk runs in about a minute with realistic noise and occasional glitches; glitches are dropped by the filter. When "Simulated route complete" appears, tap **Finish → Save walk**. Recorded distance should be within about 5% of 2 km. Reloading mid-walk shows "Unfinished walk found" on Today.
 3. **Map display.** On the walk page, the route is coloured by pace (green is fast, red is slow) on 3D terrain. Switch map styles with the swatches. Drag over the elevation chart and a marker follows on the map. Check splits, stats and PR badges.
 4. **3D flyover.** Tap **Play 3D flyover · Create Status**. The 9:16 preview plays: an overview swoops down to the start, the camera chases the marker as the path draws, live stats and the elevation cursor advance, then the camera pulls back to an orbit. Scrub with the slider and change template, colours, style and exaggeration live.
 5. **WhatsApp export.** Tap **Image (JPEG)**, then **Video (MP4)**. The progress bar shows frames and ETA. The result card shows `1080×1920 · 15s · H.264 · N MB`. On a phone, **Share to WhatsApp** opens the share sheet; choose WhatsApp → *My status*. On desktop it downloads the file. To check a file: `ffprobe status.mp4` should report `h264`, `1080x1920`, `30 fps`, and a size under 16 MB.
