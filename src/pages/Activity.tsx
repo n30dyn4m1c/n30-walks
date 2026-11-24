@@ -147,12 +147,14 @@ export function ActivityPage() {
               <thead><tr><th>{distanceUnit(u)}</th><th>Pace</th><th style={{ width: '40%' }} /><th style={{ textAlign: 'right' }}>Elev</th></tr></thead>
               <tbody>
                 {(() => {
-                  const fastest = Math.min(...s.splits.map((x) => x.paceSPerKm));
+                  // A split made of a GPS gap can have no real pace (0, NaN or Infinity): leave it out of the scale.
+                  const valid = (p: number) => Number.isFinite(p) && p > 0;
+                  const fastest = Math.min(...s.splits.map((x) => x.paceSPerKm).filter(valid));
                   return s.splits.map((sp) => (
                     <tr key={sp.index}>
                       <td>{sp.distanceM < (u === 'imperial' ? 1609 : 1000) - 1 ? fmtDistance(sp.distanceM, u) : sp.index}</td>
-                      <td>{fmtPace(sp.paceSPerKm, u)}</td>
-                      <td><div className="pace-bar" style={{ width: `${Math.max(12, (fastest / sp.paceSPerKm) * 100)}%`, opacity: sp.paceSPerKm === fastest ? 1 : 0.55 }} /></td>
+                      <td>{valid(sp.paceSPerKm) ? fmtPace(sp.paceSPerKm, u) : '–'}</td>
+                      <td><div className="pace-bar" style={{ width: `${valid(sp.paceSPerKm) && Number.isFinite(fastest) ? Math.max(12, (fastest / sp.paceSPerKm) * 100) : 12}%`, opacity: sp.paceSPerKm === fastest ? 1 : 0.55 }} /></td>
                       <td style={{ textAlign: 'right' }} className="muted">{sp.elevDeltaM >= 0 ? '+' : ''}{fmtElevation(sp.elevDeltaM, u)}</td>
                     </tr>
                   ));
