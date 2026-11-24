@@ -8,6 +8,7 @@ Each item has a status so work can continue across sessions.
 - **Reviewed at:** `4f7b596`.
 - **First fix round:** PR #5, merged as `4182674`.
 - **Second fix round:** action-plan steps 1–4 (M2, M3, M4, M8, M9, M10, the accessibility batch and the recording UX).
+- **Third fix round:** action-plan step 5 (M7, M6), plus GPX dedupe and the split-pace guard.
 - **How to continue:** pick the next ⬜ item from the [action plan](#action-plan) and change its status here in the same PR as the fix.
 
 ---
@@ -49,8 +50,8 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 | M3 | **Studio `patch()` writes settings from inside a `setCfg` updater**, on every slider `input` event. | `Studio.tsx` | Debounce the save (~300 ms) outside the updater. `updateSettings` is already transactional. | ✅ Debounced 300 ms outside the updater; a pending save is flushed when leaving Studio. |
 | M4 | **Routes page redraws the map on every render**, including each keystroke in the name field. `useEffect(() => draw(...))` has no dependency array. | `Routes.tsx` | Add real dependencies. | ✅ |
 | M5 | **Map fallback is incomplete:** it only triggers before the style loads; Relief is blank offline; `styleReady()` reads the private `style._loaded`. | `MapView.tsx`, `mapStyles.ts` | Handle later tile errors; show an "offline, recording unaffected" hint; pin `maplibre-gl` to `~5.24`. | ⬜ |
-| M6 | **Service worker:** fixed cache name means old chunks pile up; nothing is precached, so the lazy Studio chunk fails offline. | `public/sw.js` | Build-time precache manifest (e.g. `vite-plugin-pwa` / Workbox `injectManifest`) with a hashed cache name. | ⬜ |
-| M7 | **Backup import isn't validated**; a malformed file crashes pages later. | `db.ts` `importBackup` | Check version and shape; only import tracks for activities that exist. | ⬜ |
+| M6 | **Service worker:** fixed cache name means old chunks pile up; nothing is precached, so the lazy Studio chunk fails offline. | `public/sw.js` | Build-time precache manifest (e.g. `vite-plugin-pwa` / Workbox `injectManifest`) with a hashed cache name. | ✅ A small build plugin (`precacheManifest` in `vite.config.ts`, no new dependency) writes every `dist/` file and a content hash into `sw.js`. Each deploy gets its own `stride-shell-<hash>` cache; old ones are deleted on activate. Offline navigations get the cached shell; HTML responses for missing files are never cached. A `vite:preloadError` handler in `main.tsx` reloads once when an open tab asks for a chunk from an older deploy. |
+| M7 | **Backup import isn't validated**; a malformed file crashes pages later. | `db.ts` `importBackup` | Check version and shape; only import tracks for activities that exist. | ✅ `parseBackup()` in `src/db/backup.ts` rejects non-JSON, non-Stride, unknown and newer versions with a clear message; skips malformed records; keeps only well-typed settings (enums checked) and never imports `statsVersion` or `lastBackupAt`. A walk is imported only with a valid track (in the file or already on the device); orphan tracks are dropped. Walks from an older `STATS_VERSION` are recomputed. The toast reports skipped records. Tests in `src/db/backup.test.ts`. |
 | M8 | **Demo and simulated walks count toward PRs, goals and streaks**; there is no way to remove only demo walks. | `records.ts`, `Home.tsx`, `Settings.tsx` | Exclude `demo`/`simulated` sources by default; add a "Remove demo walks" button. | ✅ `countedWalks()` drops demo and simulated walks from records, goals, streaks and totals once a real walk exists (until then they stand in, so demo data still shows). Progress says how many were left out. Settings has "Remove demo walks". |
 | M9 | **The privacy claim is broader than the behaviour.** Route planning sends waypoints to `routing.openstreetmap.de`; map tiles reveal the area to OpenFreeMap, CARTO, Esri and AWS. | README, Settings | One line in Settings → Your data listing these services. | ✅ |
 | M10 | **CI publishes `apk-latest` from every branch.** | `.github/workflows/android-apk.yml` | Publish only from the default branch; upload an artifact elsewhere. | ✅ Every build uploads an artifact; only the default branch publishes `apk-latest`. |
@@ -64,9 +65,9 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 | Wake lock was re-requested without checking the old one. | ✅ |
 | JPEG result label always said 1080×1920. | ✅ |
 | `keepScreenOn: true` is the default on native too, where it isn't needed. Default it to off when `isNative()`. | ✅ |
-| Importing the same GPX twice creates duplicates. Dedupe on `startedAt` plus distance. | ⬜ |
+| Importing the same GPX twice creates duplicates. Dedupe on `startedAt` plus distance. | ✅ `findDuplicateActivity()` (start within 2 s, distance within 5%); a repeat import opens the existing walk. |
 | `NativeProvider` calls `window.confirm` inside the location callback; it can fire repeatedly. | ✅ Removed; the Record screen's denied card has "Open settings" (`openLocationSettings()`). |
-| A gap segment can still make a split with tiny duration; guard `fastest / sp.paceSPerKm` in `Activity.tsx` against 0/NaN. | ⬜ |
+| A gap segment can still make a split with tiny duration; guard `fastest / sp.paceSPerKm` in `Activity.tsx` against 0/NaN. | ✅ Splits with no real pace show "–" and are left out of the bar scale. |
 
 ---
 
@@ -77,7 +78,7 @@ The weak spots were where the layers meet (recorder ↔ stats, recording ↔ sto
 | T1 | One source of truth for stats | Shared segment rule between recorder and `computeStats`. | ✅ |
 | T2 | Tests in CI | Add `npm run e2e` to CI. It works headless but needs tile hosts reachable; it is very slow when they're blocked. | ⬜ |
 | T3 | Write path | Save + draft delete is transactional; `recomputeAllActivities` uses one transaction. | ✅ |
-| T4 | Schema evolution | `STATS_VERSION` / `migrateStats` added. Backup `version` still isn't checked (see M7). | 🟡 |
+| T4 | Schema evolution | `STATS_VERSION` / `migrateStats` added; backups carry `BACKUP_VERSION` and newer files are refused (M7). | ✅ |
 | T5 | Diagnostics | Many `catch {}` blocks hide failures. Add a small IndexedDB log ring buffer and a "Copy diagnostics" button in Settings, for device testing. | ⬜ |
 | T6 | Lint | There's no ESLint config, although `eslint-disable` comments exist. Add `eslint` with `react-hooks`; it would catch M2, M4 and stale closures. | ⬜ |
 | T7 | Dependencies | `mp4-muxer` is deprecated (migrate to `mediabunny`). Pin `maplibre-gl` to `~5.24` (see M5). | ⬜ |
@@ -142,7 +143,7 @@ Next suggested order (all ⬜ items above):
 2. ~~Accessibility batch (viewport, contrast, Sheet focus, buttons, labels).~~ Done; km announcements still open.
 3. ~~M8 demo exclusion + "Remove demo walks"; M9 privacy note; M10 CI branch gating.~~ Done.
 4. ~~Recording UX: GPS-denied card, hold-to-finish, recording pill, route remaining / off-route.~~ Done (Discard Undo toast still partial).
-5. M7 import validation; M6 precaching service worker.
+5. ~~M7 import validation; M6 precaching service worker.~~ Done, plus GPX dedupe and the split-pace guard.
 6. T6 ESLint; T5 diagnostics log; T7 Mediabunny migration.
 7. Studio sticky export bar and remaining polish.
 
@@ -159,7 +160,9 @@ Next suggested order (all ⬜ items above):
   - MP4 export: H.264, 720×1280, 30 fps, 300 frames, exactly 10 s, 5.9 MB.
   - Fastest-1 km PR computed; history persists across reload; planned route saved.
   - The video took ~56 min here (software WebGL, ~11 s per frame); on a phone or desktop it is minutes.
-- ⬜ The same run logged two non-fatal console errors: `Failed to load module script … MIME type "text/html"`. A JS chunk request got the HTML fallback instead. This is probably a stale-chunk/service-worker issue (see M6). Unconfirmed; reproduce by reloading after a rebuild.
+- 🟡 The same run logged two non-fatal console errors: `Failed to load module script … MIME type "text/html"`. A JS chunk request got the HTML fallback instead, most likely a chunk from an older build. M6 now keeps HTML out of the asset cache and reloads once on `vite:preloadError`; not re-confirmed with a full e2e run.
+
+- Round 3: `npm test` passes (52 tests, including backup parsing/import and GPX dedupe). Browser check of the built app (`vite preview`, headless Chromium): the SW precaches 19 files under a hashed cache, `/history` loads offline after a reload, and the lazy Studio chunk is served offline. Importing a newer-version backup shows the update message; a backup with a malformed walk reports "skipped 1 damaged record"; importing the same GPX twice opens the existing walk. No page errors.
 
 - Round 2 browser smoke test (headless Chromium): default map adopted on Routes, `Segmented` exposes radios, switches are labelled, `Sheet` takes, traps and returns focus, demo walks stand in then are removed by "Remove demo walks", zoom allowed, no page errors. The full `npm run e2e` was not re-run (the video export takes ~1 h here); its selectors were updated for `role="radio"` and its PR check now expects the simulated walk to be excluded.
 

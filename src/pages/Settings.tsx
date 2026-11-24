@@ -90,7 +90,11 @@ export function SettingsPage() {
             <input ref={file} type="file" accept="application/json,.json" hidden onChange={async (e) => {
               const f = e.target.files?.[0]; e.target.value = '';
               if (!f) return;
-              try { const r = await importBackup(await f.text()); toast(`Imported ${r.activities} walks, ${r.routes} routes`); } catch (err) { toast((err as Error).message); }
+              try {
+                const r = await importBackup(await f.text());
+                if (r.staleStats) await recomputeAllActivities();
+                toast(`Imported ${r.activities} walks, ${r.routes} routes${r.goals ? `, ${r.goals} goals` : ''}${r.skipped ? ` · skipped ${r.skipped} damaged record${r.skipped === 1 ? '' : 's'}` : ''}`);
+              } catch (err) { toast((err as Error).message); }
             }} />
             <button className="btn sm" disabled={busy} onClick={async () => { setBusy(true); try { toast(`Added ${await seedDemoData(s)} demo walks`); } finally { setBusy(false); } }}>{busy ? <span className="spinner" /> : 'Add demo walks'}</button>
             <button className="btn sm" disabled={busy} onClick={async () => { const n = await deleteActivitiesBySource(['demo']); toast(n ? `Removed ${n} demo walks` : 'No demo walks to remove'); }}>Remove demo walks</button>

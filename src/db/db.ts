@@ -6,6 +6,8 @@
  */
 import Dexie, { type Table } from 'dexie';
 import { Capacitor } from '@capacitor/core';
+import { BACKUP_VERSION, parseBackup } from './backup';
+import { STATS_VERSION } from '../lib/stats';
 import type { Activity, Goal, OverlayConfig, RecordingDraft, Route, Settings, Track } from '../types';
 
 export class StrideDB extends Dexie {
@@ -122,6 +124,15 @@ export async function deleteActivity(id: string): Promise<void> {
   });
 }
 
+/**
+ * An already-saved walk that is the same recording as one being imported:
+ * it starts within 2 s and its distance is within 5% (DEM/filtering can shift it a little).
+ */
+export async function findDuplicateActivity(startedAt: number, distanceM: number): Promise<Activity | undefined> {
+  const near = await db.activities.where('startedAt').between(startedAt - 2000, startedAt + 2000, true, true).toArray();
+  return near.find((a) => Math.abs(a.stats.distanceM - distanceM) <= Math.max(25, distanceM * 0.05));
+}
+
 /** Delete every walk (and its track) recorded from one of `sources`, e.g. demo walks. */
 export async function deleteActivitiesBySource(sources: Activity['source'][]): Promise<number> {
   return db.transaction('rw', db.activities, db.tracks, async () => {
@@ -137,20 +148,50 @@ export async function exportBackup(): Promise<string> {
   const [activities, tracks, routes, goals, settings] = await Promise.all([
     db.activities.toArray(), db.tracks.toArray(), db.routes.toArray(), db.goals.toArray(), db.settings.toArray(),
   ]);
-  return JSON.stringify({ app: 'stride', version: 1, exportedAt: Date.now(), activities, tracks, routes, goals, settings });
+  return JSON.stringify({ app: 'stride', version: BACKUP_VERSION, exportedAt: Date.now(), activities, tracks, routes, goals, settings });
 }
 
-export async function importBackup(json: string): Promise<{ activities: number; routes: number }> {
-  const data = JSON.parse(json);
-  if (data?.app !== 'stride') throw new Error('Not a Stride backup file');
-  await db.transaction('rw', [db.activities, db.tracks, db.routes, db.goals, db.settings], async () => {
-    await db.activities.bulkPut(data.activities ?? []);
-    await db.tracks.bulkPut(data.tracks ?? []);
-    await db.routes.bulkPut(data.routes ?? []);
-    await db.goals.bulkPut(data.goals ?? []);
-    if (data.settings?.length) await db.settings.bulkPut(data.settings);
+export interface ImportResult {
+  activities: number;
+  routes: number;
+  goals: number;
+  /** Records left out because they were malformed or had no track. */
+  skipped: number;
+  /** True when the imported walks' stats predate the current STATS_VERSION and should be recomputed. */
+  staleStats: boolean;
+}
+
+/**
+ * Import a backup file. Everything is validated first (see parseBackup); a walk
+ * is only imported with a usable track (from the file, or already on this device),
+ * and tracks without a walk are dropped, so pages never meet half a record.
+ */
+export async function importBackup(json: string): Promise<ImportResult> {
+  const data = parseBackup(json, DEFAULT_SETTINGS);
+  return db.transaction('rw', [db.activities, db.tracks, db.routes, db.goals, db.settings], async () => {
+    const fileTracks = new Map(data.tracks.map((t) => [t.activityId, t]));
+    const missing = data.activities.filter((a) => !fileTracks.has(a.id)).map((a) => a.id);
+    const onDevice = new Set((await db.tracks.bulkGet(missing)).flatMap((t) => (t ? [t.activityId] : [])));
+    const activities = data.activities.filter((a) => fileTracks.has(a.id) || onDevice.has(a.id));
+    const keep = new Set(activities.map((a) => a.id));
+    const tracks = data.tracks.filter((t) => keep.has(t.activityId));
+
+    await db.activities.bulkPut(activities);
+    await db.tracks.bulkPut(tracks);
+    await db.routes.bulkPut(data.routes);
+    await db.goals.bulkPut(data.goals);
+    if (data.settings) {
+      const cur = await getSettings();
+      await db.settings.put({ ...cur, ...data.settings, overlay: { ...cur.overlay, ...data.settings.overlay }, id: 'settings' });
+    }
+    return {
+      activities: activities.length,
+      routes: data.routes.length,
+      goals: data.goals.length,
+      skipped: data.skipped + (data.activities.length - activities.length) + (data.tracks.length - tracks.length),
+      staleStats: activities.length > 0 && data.statsVersion < STATS_VERSION,
+    };
   });
-  return { activities: data.activities?.length ?? 0, routes: data.routes?.length ?? 0 };
 }
 
 export async function clearAllData(): Promise<void> {
