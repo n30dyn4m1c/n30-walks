@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { styleReady } from '../lib/mapStyles';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -17,6 +17,7 @@ import { MODE_COLOR, MODE_ICON, MODE_LABEL } from '../lib/modes';
 import type { TrackingMode } from '../types';
 import { proceduralLoop, DEMO_START } from '../lib/demo';
 import { cumulativeDistances, nearestOnPath, type LngLat } from '../lib/geo';
+import { logWarn } from '../lib/diagnostics';
 
 function accuracyClass(acc?: number) {
   if (acc == null) return '';
@@ -72,7 +73,7 @@ export function RecordPage() {
 
   // Warm up the real GPS as soon as the screen opens (unless already busy).
   useEffect(() => {
-    if (recorder.getState().status === 'idle') recorder.acquire({ routeId }).catch(() => {});
+    if (recorder.getState().status === 'idle') recorder.acquire({ routeId }).catch((e) => logWarn('gps', 'acquire failed', e));
     return () => { recorder.cancelAcquire(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -91,21 +92,24 @@ export function RecordPage() {
   const path = useMemo(() => rec.points.map((p) => [p.lon, p.lat] as LngLat), [rec.points]);
 
   // Draw live path + position.
-  const drawLive = (map: maplibregl.Map) => {
+  // Reads the recorder directly, so it always draws the latest fix; `path` and
+  // `fix` below are only the triggers.
+  const routeColor = settings.overlay.routeColor;
+  const drawLive = useCallback((map: maplibregl.Map) => {
     if (!styleReady(map)) return;
     const s = recorder.getState();
-    addRouteLayers(map, 'live', s.points.map((p) => [p.lon, p.lat]), { color: settings.overlay.routeColor, width: 5 });
+    addRouteLayers(map, 'live', s.points.map((p) => [p.lon, p.lat]), { color: routeColor, width: 5 });
     const f = s.lastFix;
     setUserPosition(map, f ? [f.lon, f.lat] : null, f?.acc ?? 10);
-  };
-  const drawPlanned = (map: maplibregl.Map) => {
+  }, [routeColor]);
+  const drawPlanned = useCallback((map: maplibregl.Map) => {
     if (!styleReady(map)) return;
     if (plannedRoute) addRouteLayers(map, 'planned', plannedRoute.geometry, { color: '#4ea1ff', width: 4, dashed: true, beforeId: map.getLayer('live-casing') ? 'live-casing' : undefined });
     else if (map.getSource('planned')) setData(map, 'planned', lineFeature([]));
-  };
+  }, [plannedRoute]);
 
-  useEffect(() => { if (mapRef.current) drawLive(mapRef.current); }, [path, fix]);
-  useEffect(() => { if (mapRef.current) drawPlanned(mapRef.current); }, [plannedRoute]);
+  useEffect(() => { if (mapRef.current) drawLive(mapRef.current); }, [drawLive, path, fix]);
+  useEffect(() => { if (mapRef.current) drawPlanned(mapRef.current); }, [drawPlanned]);
 
   // Camera follow.
   const firstFix = useRef(true);
@@ -114,6 +118,8 @@ export function RecordPage() {
     if (!map || !here || !follow) return;
     if (firstFix.current) { map.jumpTo({ center: here, zoom: 16.2 }); firstFix.current = false; }
     else map.easeTo({ center: here, duration: 600 });
+    // `here` is derived from `fix`; follow only when a new fix arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fix?.t, follow]);
 
   // ---------- following a route: distance to go + off-route warning ----------

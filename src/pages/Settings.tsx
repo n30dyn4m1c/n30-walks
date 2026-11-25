@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { clearAllData, deleteActivitiesBySource, exportBackup, importBackup, requestPersistentStorage, storageProtection, updateSettings, type StorageProtection } from '../db/db';
+import { clearAllData, db, deleteActivitiesBySource, exportBackup, importBackup, requestPersistentStorage, storageProtection, updateSettings, type StorageProtection } from '../db/db';
 import { Icon } from '../components/Icon';
 import { Segmented, Switch, useSettings, useToast } from '../components/ui';
 import { MAP_STYLE_LIST } from '../lib/mapStyles';
@@ -8,6 +8,7 @@ import { seedDemoData, recomputeAllActivities } from '../lib/activityBuilder';
 import { saveBlob } from '../media/share';
 import { fmtDate } from '../lib/format';
 import { isNative } from '../tracking/providers';
+import { APP_VERSION, clearLog, formatDiagnostics, readLog } from '../lib/diagnostics';
 import type { Units } from '../types';
 
 export function SettingsPage() {
@@ -33,6 +34,37 @@ export function SettingsPage() {
       if (outcome !== 'cancelled') await updateSettings({ lastBackupAt: Date.now() });
     } catch (e) {
       toast(`Backup failed: ${(e as Error).message}`);
+    }
+  };
+
+  /** Device facts and the recent error log, for bug reports. Never includes locations or walk names. */
+  const copyDiagnostics = async () => {
+    try {
+      const [entries, walks, routes, draft, estimate] = await Promise.all([
+        readLog(), db.activities.count(), db.routes.count(), db.drafts.count(),
+        navigator.storage?.estimate?.().catch(() => undefined),
+      ]);
+      const text = formatDiagnostics({
+        appVersion: APP_VERSION,
+        platform: isNative() ? 'native' : 'web',
+        facts: {
+          'Walks': walks, 'Routes': routes, 'Unfinished draft': draft > 0,
+          'Storage protection': protection,
+          'Storage used': estimate?.usage != null ? `${(estimate.usage / 1e6).toFixed(1)} MB of ${((estimate.quota ?? 0) / 1e6).toFixed(0)} MB` : undefined,
+          'Online': navigator.onLine, 'Service worker': !!navigator.serviceWorker?.controller,
+          'Keep screen on': s.keepScreenOn, 'Max GPS accuracy (m)': s.maxAccuracyM, 'Units': s.units,
+          'Last backup': s.lastBackupAt ? new Date(s.lastBackupAt).toISOString() : 'never',
+        },
+      }, entries);
+      try {
+        await navigator.clipboard.writeText(text);
+        toast(`Diagnostics copied (${entries.length} log entr${entries.length === 1 ? 'y' : 'ies'})`);
+      } catch {
+        // No clipboard (insecure context, native WebView without permission): save a file instead.
+        await saveBlob(new Blob([text], { type: 'text/plain' }), `stride-diagnostics-${new Date().toISOString().slice(0, 10)}.txt`);
+      }
+    } catch (e) {
+      toast(`Could not collect diagnostics: ${(e as Error).message}`);
     }
   };
 
@@ -101,7 +133,15 @@ export function SettingsPage() {
             <button className="btn sm danger" onClick={async () => { if (confirm('Delete ALL walks, routes and goals? This cannot be undone.')) { await clearAllData(); toast('All data deleted'); } }}><Icon name="trash" size={16} /> Delete all</button>
           </div>
         </div>
-        <div className="faint small" style={{ textAlign: 'center' }}>Stride 0.1 · Map data © OpenStreetMap contributors · Terrain © Mapzen/AWS Open Data</div>
+        <div className="card stack">
+          <h3>Diagnostics</h3>
+          <p className="faint small" style={{ margin: 0 }}>Stride keeps a short log of errors on this device. Copy it into a bug report if something goes wrong. It contains no locations or walk names.</p>
+          <div className="row wrap">
+            <button className="btn sm" onClick={copyDiagnostics}>Copy diagnostics</button>
+            <button className="btn sm" onClick={async () => { await clearLog(); toast('Log cleared'); }}>Clear log</button>
+          </div>
+        </div>
+        <div className="faint small" style={{ textAlign: 'center' }}>Stride {APP_VERSION} · Map data © OpenStreetMap contributors · Terrain © Mapzen/AWS Open Data</div>
       </div>
     </div>
   );

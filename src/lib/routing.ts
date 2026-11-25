@@ -8,6 +8,7 @@
  * The endpoint is configurable via VITE_ROUTING_URL for self-hosting.
  */
 import { destination, pathLength, haversine, type LngLat } from './geo';
+import { logWarn } from './diagnostics';
 
 const BASE = (import.meta.env?.VITE_ROUTING_URL as string | undefined) ?? 'https://routing.openstreetmap.de/routed-foot/route/v1/foot';
 
@@ -34,6 +35,7 @@ export async function routeThrough(waypoints: LngLat[], signal?: AbortSignal): P
     return { geometry: r.geometry.coordinates as LngLat[], distanceM: r.distance, snapped: true };
   } catch (e) {
     if (signal?.aborted) throw e;
+    logWarn('routing', 'route service failed; using straight lines', e);
     return straightRoute(waypoints);
   }
 }

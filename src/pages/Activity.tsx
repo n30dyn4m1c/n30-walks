@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { styleReady } from '../lib/mapStyles';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -17,6 +17,7 @@ import { trackToGpx } from '../lib/gpx';
 import { enrichElevation } from '../lib/activityBuilder';
 import { saveBlob, slug } from '../media/share';
 import { distanceUnit, elevationUnit, fmtDate, fmtDistance, fmtDuration, fmtElevation, fmtNumber, fmtPace, fmtSpeed, fmtTime, paceUnit, speedUnit, uid } from '../lib/format';
+import { logWarn } from '../lib/diagnostics';
 
 export function ActivityPage() {
   const { id = '' } = useParams();
@@ -53,19 +54,20 @@ export function ActivityPage() {
   const elevationSource = activity?.stats.elevationSource;
   useEffect(() => {
     if (activity && elevationSource !== 'dem' && navigator.onLine !== false) {
-      enrichElevation(activity.id).then((done) => { if (done) toast('Elevation updated from the terrain model'); }).catch(() => {});
+      enrichElevation(activity.id).then((done) => { if (done) toast('Elevation updated from the terrain model'); }).catch((e) => logWarn('elevation', 'enrich failed', e));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activity?.id, elevationSource]);
   const prs = useMemo(() => (all && activity ? recordsSetBy(activity.id, all) : []), [all, activity]);
 
-  const draw = (map: maplibregl.Map) => {
+  const routeColor = settings.overlay.routeColor;
+  const draw = useCallback((map: maplibregl.Map) => {
     if (!coords.length || !styleReady(map)) return;
     if (map.getLayer('act-line')) { map.removeLayer('act-line'); map.removeLayer('act-casing'); }
-    addRouteLayers(map, 'act', coords, { color: settings.overlay.routeColor, gradient, width: 5 });
+    addRouteLayers(map, 'act', coords, { color: routeColor, gradient, width: 5 });
     addEndpoints(map, 'act-ends', coords[0], coords[coords.length - 1]);
-  };
-  useEffect(() => { if (mapRef.current) draw(mapRef.current); }, [coords, gradient]);
+  }, [coords, gradient, routeColor]);
+  useEffect(() => { if (mapRef.current) draw(mapRef.current); }, [draw]);
 
   if (activity === undefined || track === undefined) return <div className="page"><span className="spinner" /></div>;
   if (!activity || !track) return <div className="page empty">Walk not found. <Link to="/history" className="btn sm">Back</Link></div>;

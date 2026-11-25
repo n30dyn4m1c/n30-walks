@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
-import { defineConfig, type Plugin } from 'vite';
+import type { Plugin } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 /**
@@ -37,7 +38,11 @@ function precacheManifest(): Plugin {
 
 // Relative base so the same build works on a web server AND inside the
 // Capacitor native shell (which serves files from the app bundle).
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
+const buildId = (process.env.GITHUB_SHA ?? '').slice(0, 7) || 'local';
+
 export default defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(`${pkg.version}+${buildId}`) },
   base: './',
   plugins: [react(), precacheManifest()],
   build: {
@@ -52,4 +57,4 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts'],
   },
-} as any);
+});

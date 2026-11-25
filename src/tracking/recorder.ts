@@ -19,6 +19,7 @@ import { db, getSettings, requestPersistentStorage } from '../db/db';
 import { buildAndSaveActivity } from '../lib/activityBuilder';
 import type { ActivitySource, RecordingDraft, TrackingMode, TrackPoint, TravelMode } from '../types';
 import { createRealProvider, SimulatedProvider, type LocationProvider, type ProviderError } from './providers';
+import { logError, logWarn } from '../lib/diagnostics';
 
 export type RecorderStatus = 'idle' | 'acquiring' | 'recording' | 'paused' | 'saving';
 
@@ -94,7 +95,11 @@ class Recorder {
     this.provider = provider;
     if (provider instanceof SimulatedProvider) provider.holdPosition = true;
     this.set({ ...initial, status: 'acquiring', source: opts.simulatePath ? 'simulated' : 'gps', mode, routeId: opts.routeId, now: provider.now() });
-    await provider.start(this.onFix, (error) => { if (this.provider === provider) this.set({ error }); });
+    await provider.start(this.onFix, (error) => {
+      if (this.provider !== provider) return;
+      if (this.state.error?.code !== error.code) logWarn('gps', `provider error: ${error.code}`);
+      this.set({ error });
+    });
     if (gen !== this.generation || this.provider !== provider) { await provider.stop(); return; }
     this.startTicker();
   }
@@ -162,6 +167,7 @@ class Recorder {
       void requestPersistentStorage();
       return a.id;
     } catch (e) {
+      logError('recorder', 'save failed; walk kept as a paused draft', e);
       if (this.simulated) this.simulated.holdPosition = true;
       this.set({ status: 'paused', pausedAt });
       await this.saveDraft(true);
@@ -298,7 +304,7 @@ class Recorder {
       await db.drafts.put(draft);
       if (this.state.draftError) this.set({ draftError: false });
     } catch (e) {
-      console.warn('[recorder] draft save failed', e);
+      logWarn('recorder', 'draft save failed', e);
       if (!this.state.draftError) this.set({ draftError: true });
     }
   }
@@ -309,7 +315,7 @@ class Recorder {
       if (!settings.keepScreenOn || !('wakeLock' in navigator)) return;
       if (this.wakeLock && !this.wakeLock.released) return;
       this.wakeLock = await navigator.wakeLock.request('screen');
-    } catch { /* not fatal: user may have battery saver on */ }
+    } catch (e) { logWarn('recorder', 'wake lock refused', e); /* not fatal: battery saver */ }
   }
 
   private releaseWakeLock() {

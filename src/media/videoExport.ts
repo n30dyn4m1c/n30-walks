@@ -5,12 +5,12 @@
  * WebM on many browsers), we render frame-by-frame: position camera, wait
  * until every tile is loaded, composite map + overlay onto a 1080×1920
  * canvas, and hand the frame to the hardware H.264 encoder via WebCodecs.
- * mp4-muxer writes a fast-start MP4 — the format WhatsApp Status expects.
+ * Mediabunny muxes a fast-start MP4 — the format WhatsApp Status expects.
  *
  * Result: perfectly smooth 30 fps regardless of device speed (slow devices
  * just take longer to export).
  */
-import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
+import { BufferTarget, EncodedPacket, EncodedVideoPacketSource, Mp4OutputFormat, Output } from 'mediabunny';
 import { buildFlyoverPlan, liveStatsAt, OUTRO } from '../flyover/plan';
 import { FlyoverScene } from '../flyover/scene';
 import { attributionFor, drawOverlay, type OverlayData } from './overlay';
@@ -78,11 +78,20 @@ export async function exportFlyoverVideo(
     };
 
     const encodePass = async (pass: number, config: VideoEncoderConfig): Promise<Blob> => {
-      const target = new ArrayBufferTarget();
-      const muxer = new Muxer({ target, video: { codec: picked.muxCodec, width, height, frameRate: FPS }, fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
+      const target = new BufferTarget();
+      const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
+      const source = new EncodedVideoPacketSource(picked.muxCodec);
+      output.addVideoTrack(source, { frameRate: FPS });
+      await output.start();
       let encodeError: Error | null = null;
+      // The encoder calls back synchronously; the muxer is async. Chain the adds so
+      // packets reach the muxer in decode order, and surface the first failure.
+      let muxing: Promise<void> = Promise.resolve();
       const encoder = new VideoEncoder({
-        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+        output: (chunk, meta) => {
+          muxing = muxing.then(() => source.add(EncodedPacket.fromEncodedChunk(chunk), meta))
+            .catch((e) => { encodeError ??= e as Error; });
+        },
         error: (e) => { encodeError = e as Error; },
       });
       encoder.configure(config);
@@ -124,11 +133,16 @@ export async function exportFlyoverVideo(
         console.info(`[export] ${frames} frames, avg render wait ${(renderStats.totalMs / Math.max(1, renderStats.frames)).toFixed(0)} ms, ${renderStats.timeouts} tile timeouts`);
         onProgress({ frame: frames, frames, phase: 'finalizing', pass });
         await encoder.flush();
+        await muxing;
         if (encodeError) throw encodeError;
-        muxer.finalize();
+        await output.finalize();
+      } catch (e) {
+        if (output.state === 'started') await output.cancel().catch(() => {});
+        throw e;
       } finally {
         if (encoder.state !== 'closed') encoder.close();
       }
+      if (!target.buffer) throw new Error('The video muxer produced no data.');
       return new Blob([target.buffer], { type: 'video/mp4' });
     };
 

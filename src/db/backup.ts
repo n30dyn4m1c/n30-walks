@@ -37,19 +37,20 @@ const ENUMS: Record<string, readonly unknown[]> = {
   videoSeconds: [10, 15, 20, 30],
 };
 
-const isObj = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 const isLngLat = (v: unknown): v is [number, number] =>
   Array.isArray(v) && v.length >= 2 && isNum(v[0]) && isNum(v[1]) && Math.abs(v[0]) <= 180 && Math.abs(v[1]) <= 90;
 const isPath = (v: unknown): v is [number, number][] => Array.isArray(v) && v.every(isLngLat);
+const oneOf = (list: readonly unknown[], v: unknown) => list.includes(v);
 const isPair = (v: unknown): v is [number, number] => Array.isArray(v) && v.length === 2 && isNum(v[0]) && isNum(v[1]);
 
 function validActivity(a: unknown): a is Activity {
   if (!isObj(a)) return false;
   const s = a.stats;
   return isStr(a.id) && typeof a.name === 'string' && isNum(a.startedAt) && isNum(a.endedAt)
-    && (a.type === 'walk' || a.type === 'hike' || a.type === 'mixed') && ACTIVITY_SOURCES.includes(a.source)
+    && (a.type === 'walk' || a.type === 'hike' || a.type === 'mixed') && oneOf(ACTIVITY_SOURCES, a.source)
     && isObj(s) && isNum(s.distanceM) && isNum(s.elapsedS) && isNum(s.movingS)
     && isObj(s.bestEfforts) && Array.isArray(s.splits)
     && Array.isArray(a.bbox) && a.bbox.length === 4 && a.bbox.every(isNum)
@@ -68,16 +69,16 @@ function validTrack(t: unknown): t is Track {
 function validRoute(r: unknown): r is Route {
   return isObj(r) && isStr(r.id) && typeof r.name === 'string' && isPath(r.waypoints)
     && isPath(r.geometry) && r.geometry.length >= 2 && isNum(r.distanceM)
-    && ROUTE_SOURCES.includes(r.source) && isNum(r.createdAt) && isNum(r.updatedAt);
+    && oneOf(ROUTE_SOURCES, r.source) && isNum(r.createdAt) && isNum(r.updatedAt);
 }
 
 function validGoal(g: unknown): g is Goal {
-  return isObj(g) && isStr(g.id) && GOAL_METRICS.includes(g.metric) && GOAL_PERIODS.includes(g.period)
+  return isObj(g) && isStr(g.id) && oneOf(GOAL_METRICS, g.metric) && oneOf(GOAL_PERIODS, g.period)
     && isNum(g.target) && g.target > 0;
 }
 
 /** Keep only keys whose value has the same type as in `defaults`. */
-function pickTyped<T extends object>(src: Record<string, any>, defaults: T, skip: string[] = []): Partial<T> {
+function pickTyped<T extends object>(src: Record<string, unknown>, defaults: T, skip: string[] = []): Partial<T> {
   const out: Record<string, unknown> = {};
   for (const [k, def] of Object.entries(defaults)) {
     if (skip.includes(k) || !(k in src)) continue;
@@ -96,7 +97,7 @@ function sanitizeSettings(raw: unknown, defaults: Settings): Partial<Settings> |
 }
 
 /** A table must be missing or an array; then keep the valid records. */
-function table<T>(data: Record<string, any>, key: string, valid: (v: unknown) => v is T): { ok: T[]; bad: number } {
+function table<T>(data: Record<string, unknown>, key: string, valid: (v: unknown) => v is T): { ok: T[]; bad: number } {
   const v = data[key];
   if (v == null) return { ok: [], bad: 0 };
   if (!Array.isArray(v)) throw new Error(`This backup file is damaged ("${key}" is not a list).`);
@@ -113,8 +114,9 @@ export function parseBackup(json: string, defaults: Settings): ParsedBackup {
   let data: unknown;
   try { data = JSON.parse(json); } catch { throw new Error('This file isn’t a valid backup (not JSON).'); }
   if (!isObj(data) || data.app !== 'stride') throw new Error('Not a Stride backup file');
-  if (!Number.isInteger(data.version) || data.version < 1) throw new Error('This backup file is damaged (unknown version).');
-  if (data.version > BACKUP_VERSION) throw new Error('This backup was made by a newer version of Stride. Update the app, then import it again.');
+  const version = data.version;
+  if (!isNum(version) || !Number.isInteger(version) || version < 1) throw new Error('This backup file is damaged (unknown version).');
+  if (version > BACKUP_VERSION) throw new Error('This backup was made by a newer version of Stride. Update the app, then import it again.');
 
   const activities = table(data, 'activities', validActivity);
   const tracks = table(data, 'tracks', validTrack);
@@ -125,7 +127,7 @@ export function parseBackup(json: string, defaults: Settings): ParsedBackup {
   const rawSettings = settingsList.find((s) => isObj(s) && s.id === 'settings');
 
   return {
-    version: data.version,
+    version,
     activities: activities.ok,
     tracks: tracks.ok,
     routes: routes.ok,
