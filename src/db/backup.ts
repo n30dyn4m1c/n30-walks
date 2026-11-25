@@ -49,7 +49,7 @@ function validActivity(a: unknown): a is Activity {
   if (!isObj(a)) return false;
   const s = a.stats;
   return isStr(a.id) && typeof a.name === 'string' && isNum(a.startedAt) && isNum(a.endedAt)
-    && (a.type === 'walk' || a.type === 'hike') && ACTIVITY_SOURCES.includes(a.source)
+    && (a.type === 'walk' || a.type === 'hike' || a.type === 'mixed') && ACTIVITY_SOURCES.includes(a.source)
     && isObj(s) && isNum(s.distanceM) && isNum(s.elapsedS) && isNum(s.movingS)
     && isObj(s.bestEfforts) && Array.isArray(s.splits)
     && Array.isArray(a.bbox) && a.bbox.length === 4 && a.bbox.every(isNum)

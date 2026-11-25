@@ -26,13 +26,16 @@ export function ActivityRow({ a }: { a: Activity }) {
       <div className="grow">
         <div className="row between">
           <h3 style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</h3>
-          {a.source !== 'gps' && <span className="badge gray">{a.source}</span>}
+          <span className="row" style={{ gap: 4, flexShrink: 0 }}>
+            {a.type === 'mixed' && <span className="badge gray" title="Mixed journey (walk + ride)"><Icon name="bus" size={12} /> mixed</span>}
+            {a.source !== 'gps' && <span className="badge gray">{a.source}</span>}
+          </span>
         </div>
         <div className="faint small" style={{ margin: '2px 0 6px' }}>{fmtDate(a.startedAt)} · {new Date(a.startedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</div>
         <div className="row small tnum" style={{ gap: 14 }}>
           <span><strong>{fmtDistance(a.stats.distanceM, s.units)}</strong> {distanceUnit(s.units)}</span>
           <span>{fmtDuration(a.stats.movingS)}</span>
-          <span className="muted">{fmtPace(a.stats.avgPaceSPerKm, s.units, true)}</span>
+          <span className="muted">{a.stats.journey ? `${fmtDistance(a.stats.journey.distanceM, s.units, true)} trip` : fmtPace(a.stats.avgPaceSPerKm, s.units, true)}</span>
         </div>
       </div>
     </Link>

@@ -24,6 +24,30 @@ export interface TrackPoint {
 
 export type ActivitySource = 'gps' | 'simulated' | 'gpx' | 'demo';
 
+/**
+ * How a recording is tracked.
+ *  - 'walk':  on foot only. Anything faster than a jog is treated as a GPS glitch.
+ *  - 'mixed': a journey that can mix walking, running and riding (bus, train,
+ *             car, bike). Fast movement is kept, and each stretch is classified
+ *             by speed so only the on-foot parts count toward pace, steps and PRs.
+ */
+export type TrackingMode = 'walk' | 'mixed';
+
+/** Travel mode of one stretch of a mixed journey, inferred from speed. */
+export type TravelMode = 'walk' | 'run' | 'vehicle';
+
+export interface ModeTotals {
+  distanceM: number;
+  movingS: number;
+}
+
+/** Whole-journey totals of a mixed activity, including the parts not on foot. */
+export interface JourneyStats {
+  distanceM: number;
+  movingS: number;
+  modes: Record<TravelMode, ModeTotals>;
+}
+
 export interface Split {
   /** 1-based index of the split (km or mile) */
   index: number;
@@ -50,12 +74,18 @@ export interface ActivityStats {
   bestEfforts: Record<string, number>;
   splits: Split[];
   elevationSource: 'dem' | 'gps' | 'none';
+  /**
+   * Mixed journeys only. The fields above then describe the ON-FOOT part
+   * (walk + run), so pace, steps, goals and records stay honest; this holds
+   * the full journey including vehicle stretches.
+   */
+  journey?: JourneyStats;
 }
 
 export interface Activity {
   id: string;
   name: string;
-  type: 'walk' | 'hike';
+  type: 'walk' | 'hike' | 'mixed';
   startedAt: number;
   endedAt: number;
   source: ActivitySource;
@@ -155,5 +185,7 @@ export interface RecordingDraft {
   pausedAt: number | null;
   source: ActivitySource;
   routeId?: string;
+  /** Missing on drafts from older versions: treat as 'walk'. */
+  mode?: TrackingMode;
   updatedAt: number;
 }

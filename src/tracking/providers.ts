@@ -111,7 +111,11 @@ export class SimulatedProvider implements LocationProvider {
   /** While true the simulated walker stands still (mirrors a paused recording). */
   holdPosition = false;
 
-  constructor(private path: LngLat[], speedup = 10, private walkSpeedMps = 1.45) {
+  /**
+   * @param speedAt Optional speed profile (m/s at a distance along the path),
+   *   e.g. walk → bus → walk for testing mixed journeys. Defaults to walking.
+   */
+  constructor(private path: LngLat[], speedup = 10, private walkSpeedMps = 1.45, private speedAt?: (distanceM: number) => number) {
     this.cum = cumulativeDistances(path);
     this.simNow = Date.now();
     this.speedup = speedup;
@@ -130,7 +134,7 @@ export class SimulatedProvider implements LocationProvider {
       lastWall = wall;
       this.simNow += dtSim;
       sinceFix += dtSim;
-      if (this.dist < total && !this.holdPosition) this.dist = Math.min(total, this.dist + (this.walkSpeedMps * (1 + 0.1 * Math.sin(this.dist / 250)) * dtSim) / 1000);
+      if (this.dist < total && !this.holdPosition) this.dist = Math.min(total, this.dist + (this.speedNow() * (1 + 0.1 * Math.sin(this.dist / 250)) * dtSim) / 1000);
       // Emit one fix per simulated second, like a real GPS chipset.
       while (sinceFix >= 1000) {
         sinceFix -= 1000;
@@ -143,11 +147,13 @@ export class SimulatedProvider implements LocationProvider {
         onFix({
           lon: p[0] + (gaussian(r) * noiseM) / (k * Math.cos((p[1] * Math.PI) / 180)),
           lat: p[1] + (gaussian(r) * noiseM) / k,
-          acc, alt: null, speed: this.walkSpeedMps, t: this.simNow - sinceFix,
+          acc, alt: null, speed: this.speedNow(), t: this.simNow - sinceFix,
         });
       }
     }, tickMs);
   }
+
+  private speedNow() { return this.speedAt?.(this.dist) ?? this.walkSpeedMps; }
 
   /** Has the simulated walker reached the end of the path? */
   get finished() { return this.dist >= this.cum[this.cum.length - 1]; }

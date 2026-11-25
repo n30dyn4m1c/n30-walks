@@ -102,7 +102,10 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
     const live = liveStatsAt(plan, distance);
     drawOverlay(ctx, w, h, cfgRef.current, {
       title: cfgRef.current.title || activity.name, dateMs: activity.startedAt, units: settings.units,
-      totals: { distanceM: s.distanceM, movingS: s.movingS, paceSPerKm: s.avgPaceSPerKm, elevGainM: s.elevGainM, steps: s.estSteps },
+      // The flyover follows the whole track, so a mixed journey shows trip totals (live and final agree).
+      totals: s.journey
+        ? { distanceM: s.journey.distanceM, movingS: s.journey.movingS, paceSPerKm: s.journey.distanceM > 0 ? s.journey.movingS / (s.journey.distanceM / 1000) : 0, elevGainM: s.elevGainM, steps: s.estSteps }
+        : { distanceM: s.distanceM, movingS: s.movingS, paceSPerKm: s.avgPaceSPerKm, elevGainM: s.elevGainM, steps: s.estSteps },
       live: uu < OUTRO ? { distanceM: live.distanceM, movingS: live.movingS, eleM: live.eleM } : undefined,
       progress: distance / plan.total, profile: plan.profile, attribution: attributionFor(cfgRef.current.mapStyle),
     });

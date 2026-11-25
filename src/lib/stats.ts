@@ -3,7 +3,7 @@
  * Pure functions — unit-tested in stats.test.ts.
  */
 import { haversine, cumulativeDistances, type LngLat } from './geo';
-import type { ActivityStats, Split, TrackPoint } from '../types';
+import type { ActivityStats, JourneyStats, Split, TrackPoint, TravelMode } from '../types';
 
 /** Segments slower than this are considered "not moving" (auto-pause). */
 export const MOVING_SPEED_MPS = 0.3;
@@ -133,6 +133,124 @@ export function walkingMet(speedMps: number): number {
   return table[table.length - 1][1];
 }
 
+/** MET for running by speed (Compendium of Physical Activities, interpolated). */
+export function runningMet(speedMps: number): number {
+  const table: [number, number][] = [[2.24, 8.3], [2.68, 9.0], [3.0, 9.8], [3.35, 10.5], [3.58, 11.0], [4.02, 11.8], [4.47, 12.3], [4.92, 12.8], [5.36, 14.5]];
+  if (speedMps <= table[0][0]) return walkingMet(speedMps);
+  for (let i = 1; i < table.length; i++) {
+    if (speedMps <= table[i][0]) {
+      const [s0, m0] = table[i - 1], [s1, m1] = table[i];
+      return m0 + ((speedMps - s0) / (s1 - s0)) * (m1 - m0);
+    }
+  }
+  return table[table.length - 1][1];
+}
+
+// ---------------- travel modes (mixed journeys) ----------------
+
+/** Sustained speed above this is running rather than walking (~8.6 km/h). */
+export const WALK_MAX_MPS = 2.4;
+/** Sustained speed above this is a vehicle (bus, train, car, bike) rather than running (~18 km/h). */
+export const VEHICLE_MIN_MPS = 5.0;
+/** Speed is judged over moving time within this many seconds either side of a segment. */
+export const MODE_WINDOW_S = 30;
+/** A stretch shorter than this (moving time) can't change the mode: it is merged into a neighbour. */
+export const MIN_MODE_RUN_S = 60;
+
+export function modeForSpeed(speedMps: number): TravelMode {
+  return speedMps >= VEHICLE_MIN_MPS ? 'vehicle' : speedMps >= WALK_MAX_MPS ? 'run' : 'walk';
+}
+
+/**
+ * Travel mode of every segment (points[i] → points[i+1]) of a journey,
+ * inferred from speed. Returns an array of length points.length - 1.
+ *
+ *  1. Each moving segment gets the average speed over moving time in a ±30 s
+ *     window, so GPS jitter and a single fast fix don't flip the mode.
+ *  2. Stationary and paused segments carry the mode of the stretch they sit in:
+ *     a bus waiting at a stop is still the bus, waiting at the stop is walking.
+ *  3. Stretches shorter than a minute of moving time are merged into the
+ *     longer neighbour, so a bus crawling for 20 s in traffic stays a bus.
+ */
+export function classifyModes(points: TrackPoint[], pauses: [number, number][] = []): TravelMode[] {
+  const n = points.length - 1;
+  if (n <= 0) return [];
+  const d: number[] = new Array(n), dt: number[] = new Array(n), moving: boolean[] = new Array(n), mid: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = points[i], b = points[i + 1];
+    d[i] = haversine([a.lon, a.lat], [b.lon, b.lat]);
+    dt[i] = Math.max(0, (b.t - a.t) / 1000);
+    mid[i] = (a.t + b.t) / 2;
+    moving[i] = !overlapsPause(a.t, b.t, pauses) && dt[i] > 0 && d[i] / dt[i] >= MOVING_SPEED_MPS;
+  }
+
+  // 1. Windowed speed over moving segments (two pointers over time).
+  const labels: (TravelMode | null)[] = new Array(n).fill(null);
+  const w = MODE_WINDOW_S * 1000;
+  let lo = 0, hi = 0, sumD = 0, sumT = 0;
+  for (let i = 0; i < n; i++) {
+    while (hi < n && mid[hi] <= mid[i] + w) { if (moving[hi]) { sumD += d[hi]; sumT += dt[hi]; } hi++; }
+    while (lo < n && mid[lo] < mid[i] - w) { if (moving[lo]) { sumD -= d[lo]; sumT -= dt[lo]; } lo++; }
+    if (!moving[i]) continue;
+    // A long gap segment on its own still says something: judge it by its own speed.
+    labels[i] = modeForSpeed(sumT > 0 ? sumD / sumT : d[i] / dt[i]);
+  }
+
+  // 2. Stationary segments inherit the surrounding mode.
+  const firstLabel = labels.find((l) => l != null) ?? 'walk';
+  let cur: TravelMode = firstLabel;
+  const modes: TravelMode[] = labels.map((l) => (cur = l ?? cur));
+
+  // 3. Merge short stretches.
+  type Run = { start: number; end: number; mode: TravelMode; movingS: number };
+  const runsOf = (): Run[] => {
+    const runs: Run[] = [];
+    for (let i = 0; i < n; i++) {
+      const last = runs[runs.length - 1];
+      const m = moving[i] ? dt[i] : 0;
+      if (last && last.mode === modes[i]) { last.end = i; last.movingS += m; }
+      else runs.push({ start: i, end: i, mode: modes[i], movingS: m });
+    }
+    return runs;
+  };
+  for (let guard = 0; guard < n; guard++) {
+    const runs = runsOf();
+    if (runs.length < 2) break;
+    let k = -1;
+    for (let j = 0; j < runs.length; j++) if (runs[j].movingS < MIN_MODE_RUN_S && (k < 0 || runs[j].movingS < runs[k].movingS)) k = j;
+    if (k < 0) break;
+    const prev = runs[k - 1], next = runs[k + 1];
+    const into = !prev ? next : !next ? prev : prev.mode === next.mode || prev.movingS >= next.movingS ? prev : next;
+    for (let i = runs[k].start; i <= runs[k].end; i++) modes[i] = into.mode;
+  }
+  return modes;
+}
+
+/** Whether a track contains a vehicle stretch (e.g. a GPX import of a walk + bus journey). */
+export function hasVehicleStretch(points: TrackPoint[]): boolean {
+  return classifyModes(points).includes('vehicle');
+}
+
+/**
+ * Current travel mode while recording, from the last ~40 s of moving time.
+ * Null while standing still.
+ */
+export function liveMode(points: TrackPoint[], pauses: [number, number][] = []): { mode: TravelMode; speedMps: number } | null {
+  const n = points.length;
+  if (n < 2) return null;
+  const end = points[n - 1].t;
+  let sumD = 0, sumT = 0;
+  for (let i = n - 1; i > 0 && end - points[i].t < 40_000; i--) {
+    const a = points[i - 1], b = points[i];
+    if (overlapsPause(a.t, b.t, pauses)) continue;
+    const segD = haversine([a.lon, a.lat], [b.lon, b.lat]), segT = (b.t - a.t) / 1000;
+    if (segT > 0 && segT <= MAX_GAP_S && segD / segT >= MOVING_SPEED_MPS) { sumD += segD; sumT += segT; }
+  }
+  if (sumT < 5) return null;
+  const speedMps = sumD / sumT;
+  return { mode: modeForSpeed(speedMps), speedMps };
+}
+
 export interface StatsOptions {
   weightKg: number;
   strideM: number;
@@ -140,6 +258,12 @@ export interface StatsOptions {
   elevationSource?: ActivityStats['elevationSource'];
   /** Split length in meters (1000 for km, 1609.344 for miles) */
   splitM?: number;
+  /**
+   * Mixed journey: classify stretches by speed. Distance, moving time, pace,
+   * splits, best efforts, steps, calories and climbing then cover the on-foot
+   * stretches only, and `journey` holds the full trip.
+   */
+  mixed?: boolean;
 }
 
 export function computeStats(points: TrackPoint[], opts: StatsOptions): ActivityStats {
@@ -152,15 +276,27 @@ export function computeStats(points: TrackPoint[], opts: StatsOptions): Activity
   };
   if (n === 0) return empty;
 
+  const modes = opts.mixed ? classifyModes(points, pauses) : null;
+  const zero = () => ({ distanceM: 0, movingS: 0 });
+  const journey: JourneyStats | undefined = modes ? { distanceM: 0, movingS: 0, modes: { walk: zero(), run: zero(), vehicle: zero() } } : undefined;
+
   let distance = 0;
   let moving = 0;
-  // "Effective" cumulative distance/time series excluding pauses — used for best efforts.
+  // "Effective" cumulative distance/time series excluding pauses (and, for a
+  // mixed journey, vehicle stretches) — used for splits and best efforts.
   const cum: number[] = [0];
   const movT: number[] = [0];
   for (let i = 1; i < n; i++) {
     const c = segmentContribution(points[i - 1], points[i], pauses);
-    distance += c.d;
-    moving += c.moving;
+    if (journey && modes) {
+      const m = journey.modes[modes[i - 1]];
+      m.distanceM += c.d; m.movingS += c.moving;
+      journey.distanceM += c.d; journey.movingS += c.moving;
+    }
+    if (!modes || modes[i - 1] !== 'vehicle') {
+      distance += c.d;
+      moving += c.moving;
+    }
     cum.push(distance);
     movT.push(moving);
   }
@@ -175,11 +311,21 @@ export function computeStats(points: TrackPoint[], opts: StatsOptions): Activity
   let gain = 0, loss = 0, minE: number | null = null, maxE: number | null = null;
   let elevationSource: ActivityStats['elevationSource'] = 'none';
   if (raw.length >= 2 && raw.length >= n * 0.5) {
-    const sm = smooth(raw, opts.elevationSource === 'dem' ? 3 : 7);
-    ({ gain, loss } = elevationGainLoss(sm, opts.elevationSource === 'dem' ? 2 : 4));
+    const win = opts.elevationSource === 'dem' ? 3 : 7, thr = opts.elevationSource === 'dem' ? 2 : 4;
+    const sm = smooth(raw, win);
     minE = Math.min(...sm);
     maxE = Math.max(...sm);
     elevationSource = opts.elevationSource ?? 'gps';
+    if (!modes) ({ gain, loss } = elevationGainLoss(sm, thr));
+    else {
+      // Climbing counts on foot only: the bus up the hill isn't your effort.
+      for (const run of footRuns(modes)) {
+        const e = points.slice(run[0], run[1] + 1).map((p) => p.ele).filter((v): v is number => v != null && isFinite(v));
+        if (e.length < 2) continue;
+        const r = elevationGainLoss(smooth(e, win), thr);
+        gain += r.gain; loss += r.loss;
+      }
+    }
   }
 
   // Splits (per km / mile), measured on moving time.
@@ -218,7 +364,11 @@ export function computeStats(points: TrackPoint[], opts: StatsOptions): Activity
   }
 
   const avgSpeed = moving > 0 ? distance / moving : 0;
-  const kcal = walkingMet(avgSpeed) * opts.weightKg * (moving / 3600);
+  let kcal: number;
+  if (journey) {
+    const met = (m: { distanceM: number; movingS: number }, f: (v: number) => number) => (m.movingS > 0 ? f(m.distanceM / m.movingS) * opts.weightKg * (m.movingS / 3600) : 0);
+    kcal = met(journey.modes.walk, walkingMet) + met(journey.modes.run, runningMet);
+  } else kcal = walkingMet(avgSpeed) * opts.weightKg * (moving / 3600);
   return {
     distanceM: distance,
     elapsedS: elapsed,
@@ -234,7 +384,20 @@ export function computeStats(points: TrackPoint[], opts: StatsOptions): Activity
     bestEfforts,
     splits,
     elevationSource,
+    ...(journey ? { journey } : {}),
   };
+}
+
+/** Point-index ranges [first, last] of the on-foot stretches of a classified journey. */
+function footRuns(modes: TravelMode[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 0; i < modes.length; i++) {
+    if (modes[i] === 'vehicle') continue;
+    const last = out[out.length - 1];
+    if (last && last[1] === i) last[1] = i + 1;
+    else out.push([i, i + 1]);
+  }
+  return out;
 }
 
 /** Per-point pace (s/km) using a distance-windowed rolling average — for map colouring & live stats. */

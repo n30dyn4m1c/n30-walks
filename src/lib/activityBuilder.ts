@@ -2,11 +2,11 @@
  * Turns a finished set of track points into a persisted Activity + Track:
  * DEM elevation correction → stats → bbox/preview → save.
  */
-import type { Activity, ActivitySource, Settings, Track, TrackPoint } from '../types';
+import type { Activity, ActivitySource, Settings, Track, TrackingMode, TrackPoint } from '../types';
 import { bbox, simplifyToCount } from './geo';
 import { computeStats, toLngLat, STATS_VERSION } from './stats';
 import { sampleElevations } from './elevation';
-import { defaultWalkName, uid, M_PER_MI } from './format';
+import { defaultJourneyName, defaultWalkName, uid, M_PER_MI } from './format';
 import { db, getSettings, saveActivity, updateSettings } from '../db/db';
 import { proceduralLoop, timedWalk, DEMO_START } from './demo';
 import { destination } from './geo';
@@ -28,12 +28,22 @@ export interface BuildOptions {
   id?: string;
   /** Delete the recording draft in the same transaction as the save. */
   clearDraft?: boolean;
+  /** 'mixed' = a journey that may include vehicle stretches (default 'walk'). */
+  mode?: TrackingMode;
+}
+
+/** Walks become hikes when they climb a lot; mixed journeys stay mixed. */
+function activityType(mixed: boolean, elevGainM: number, current?: Activity['type']): Activity['type'] {
+  if (mixed) return 'mixed';
+  return elevGainM > 150 ? 'hike' : current ?? 'walk';
 }
 
 export async function buildAndSaveActivity(rawPoints: TrackPoint[], opts: BuildOptions): Promise<Activity> {
   if (rawPoints.length < 2) throw new Error('Not enough GPS points to save this walk.');
+  const mixed = opts.mode === 'mixed';
   const { points, source: elevationSource } = await withDemElevation(rawPoints);
   const stats = computeStats(points, {
+    mixed,
     weightKg: opts.settings.weightKg,
     strideM: opts.settings.strideM,
     pauses: opts.pauses,
@@ -44,8 +54,8 @@ export async function buildAndSaveActivity(rawPoints: TrackPoint[], opts: BuildO
   const now = Date.now();
   const activity: Activity = {
     id: opts.id ?? uid(),
-    name: opts.name ?? defaultWalkName(points[0].t),
-    type: stats.elevGainM > 150 ? 'hike' : 'walk',
+    name: opts.name ?? (mixed ? defaultJourneyName(points[0].t) : defaultWalkName(points[0].t)),
+    type: activityType(mixed, stats.elevGainM),
     startedAt: points[0].t,
     endedAt: points[points.length - 1].t,
     source: opts.source,
@@ -63,12 +73,14 @@ export async function buildAndSaveActivity(rawPoints: TrackPoint[], opts: BuildO
 
 /** Recompute stats (e.g. after units/weight change) from the stored track. */
 export function recomputeStats(activity: Activity, track: Track, settings: Settings, elevationSource?: 'dem'): Activity {
+  const mixed = activity.type === 'mixed';
   const stats = computeStats(track.points, {
+    mixed,
     weightKg: settings.weightKg, strideM: settings.strideM, pauses: track.pauses,
     elevationSource: elevationSource ?? (activity.stats.elevationSource === 'dem' ? 'dem' : undefined),
     splitM: settings.units === 'imperial' ? M_PER_MI : 1000,
   });
-  return { ...activity, stats, type: stats.elevGainM > 150 ? 'hike' : activity.type, updatedAt: Date.now() };
+  return { ...activity, stats, type: activityType(mixed, stats.elevGainM, activity.type), updatedAt: Date.now() };
 }
 
 /** Recompute every stored activity in one transaction (units/weight change, algorithm update). */

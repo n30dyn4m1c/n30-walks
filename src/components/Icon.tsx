@@ -32,6 +32,8 @@ const paths: Record<string, string> = {
   check: 'M5 12.5 10 17l9-10',
   sim: 'M12 3a9 9 0 1 0 9 9M12 7v5l3 3M17 3h4v4',
   flag: 'M5 21V4m0 0h11l-2 4 2 4H5',
+  run: 'M15 4.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM4 21l4-4.5 3 2 2-4.5 4 2.5M6.5 11l3.5-3 4 1 2 3.5 3 .5',
+  bus: 'M6 17V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v11zm0 0v2.5m12-2.5v2.5M6 11h12M9 14.5h.01M15 14.5h.01',
 };
 
 export function Icon({ name, size = 22, stroke = 2, className, fill }: { name: keyof typeof paths | string; size?: number; stroke?: number; className?: string; fill?: boolean }) {
