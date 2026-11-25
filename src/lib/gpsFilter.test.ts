@@ -90,7 +90,8 @@ describe('GpsFilter glitch handling', () => {
     const r = rng(21);
     const fixes = [];
     for (let i = 0; i <= 300; i++) {
-      let x = gaussian(r) * 3, y = 1.4 * i + gaussian(r) * 3, acc = 6;
+      let x = gaussian(r) * 3, acc = 6;
+      const y = 1.4 * i + gaussian(r) * 3;
       // Spikes: one-off 150 m jump, then a 2-fix burst 200 m east, both with "good" accuracy.
       if (i === 60) { x += 150; acc = 12; }
       if (i === 150 || i === 151) { x += 200; acc = 15; }

@@ -9,6 +9,7 @@
  * Terrarium encoding: elevation = R*256 + G + B/256 − 32768 (meters).
  */
 import type { LngLat } from './geo';
+import { logWarn } from './diagnostics';
 
 export const TERRARIUM_URL = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
 const TILE = 256;
@@ -50,7 +51,8 @@ async function loadTile(z: number, x: number, y: number): Promise<Float32Array |
         const out = new Float32Array(TILE * TILE);
         for (let i = 0; i < out.length; i++) out[i] = decodeTerrarium(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
         return out;
-      } catch {
+      } catch (e) {
+        logWarn('elevation', 'terrain tile failed', e);
         return null;
       } finally {
         clearTimeout(timer);

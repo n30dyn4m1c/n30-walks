@@ -59,7 +59,8 @@ export function timedWalk(path: LngLat[], startMs: number, opts: { speedMps?: nu
   const cum = cumulativeDistances(path);
   const total = cum[cum.length - 1];
   const out: TrackPoint[] = [];
-  let d = 0, t = startMs, phase = r() * 6;
+  const phase = r() * 6;
+  let d = 0, t = startMs;
   const stopAt = opts.stop ? total * (0.4 + r() * 0.2) : Infinity;
   let stopped = false;
   while (d < total) {

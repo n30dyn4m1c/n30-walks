@@ -39,7 +39,7 @@ npm run mobile:ios                # native iOS build (Xcode, macOS only)
 | Maps / 3D | **MapLibre GL JS 5** with `raster-dem` terrain, sky/fog, hillshade and `color-relief` | Open source and needs no API key. It supports true 3D terrain with pitch up to 85°. Route, marker and halo are all drawn in WebGL, so the exported frames contain exactly what you see in the player. |
 | Tiles | OpenFreeMap (Outdoor, Light), CARTO (Dark), Esri (Satellite), **self-built "Relief" style** from AWS Terrarium DEM | None need a key. Relief needs only DEM tiles, so it is also the **automatic fallback** when a basemap provider can't be reached. |
 | Background GPS | `@capacitor-community/background-geolocation` | Runs an Android foreground service and uses iOS background location mode, so tracking continues with the screen off. Browsers can't do this, and the app says so on screen. |
-| Video | **Frame-by-frame rendering → WebCodecs `VideoEncoder` (H.264) → `mp4-muxer`** | This gives a deterministic, perfectly smooth 30 fps MP4 at 1080×1920 with fast-start, on any device speed. A slow phone just takes longer to export. MediaRecorder screen capture drops frames and produces WebM on Chrome, which WhatsApp doesn't accept. |
+| Video | **Frame-by-frame rendering → WebCodecs `VideoEncoder` (H.264) → Mediabunny MP4 muxer** | This gives a deterministic, perfectly smooth 30 fps MP4 at 1080×1920 with fast-start, on any device speed. A slow phone just takes longer to export. MediaRecorder screen capture drops frames and produces WebM on Chrome, which WhatsApp doesn't accept. |
 | Storage | **IndexedDB via Dexie** | Local-first and works offline. It is identical in the browser and in the native WebView. Tracks are stored separately from summaries, so list and analytics screens stay fast. |
 | Routing | OSRM `foot` profile (FOSSGIS public instance), with a straight-line fallback | No key needed. Override it with `VITE_ROUTING_URL` to self-host. |
 
@@ -106,7 +106,7 @@ src/
   flyover/scene.ts         MapLibre layers + per-frame camera
   media/overlay.ts         canvas overlay (classic / minimal / bold), shared by preview, MP4 and JPEG
   media/offscreenMap.ts    fixed-size hidden map used for export frames
-  media/videoExport.ts     WebCodecs + mp4-muxer pipeline
+  media/videoExport.ts     WebCodecs + Mediabunny pipeline
   media/imageExport.ts     hero still
   media/share.ts           native share / Web Share / download
   components/, pages/      UI

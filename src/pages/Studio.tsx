@@ -21,6 +21,7 @@ import { MAP_STYLE_LIST, styleReady } from '../lib/mapStyles';
 import { fmtDuration } from '../lib/format';
 import { enrichElevation } from '../lib/activityBuilder';
 import type { Activity, OverlayConfig, Track } from '../types';
+import { logError, logWarn } from '../lib/diagnostics';
 
 const ACCENTS = ['#b8f34a', '#ffffff', '#ffd166', '#4ea1ff', '#ff7ab6', '#2ee6c5'];
 const ROUTE_COLORS = ['#ff5a36', '#b8f34a', '#4ea1ff', '#ffd166', '#ffffff', '#c084fc'];
@@ -61,7 +62,7 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
     window.clearTimeout(pendingSave.current);
     pendingSave.current = null;
     const { title: _t, ...rest } = cfgRef.current;
-    updateSettings({ overlay: { ...rest, title: '' } }).catch(() => {});
+    updateSettings({ overlay: { ...rest, title: '' } }).catch((e) => logWarn('studio', 'saving overlay settings failed', e));
   }, []);
   useEffect(() => flushSave, [flushSave]);
   const patch = (p: Partial<OverlayConfig>) => {
@@ -180,7 +181,7 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
       if (!info.whatsappReady) toast('No H.264 encoder here — exported VP9. Use Chrome/Safari on your phone for WhatsApp.');
       else if (!info.fitsWhatsApp) toast('The video is larger than WhatsApp allows. Try 720p or a shorter length.');
     } catch (e) {
-      if ((e as DOMException).name !== 'AbortError') setError((e as Error).message);
+      if ((e as DOMException).name !== 'AbortError') { logError('export', 'video export failed', e); setError((e as Error).message); }
     } finally { release(); setBusy(null); setProgress(null); exportingRef.current = false; }
   };
 
@@ -191,7 +192,7 @@ function Studio({ activity, track }: { activity: Activity; track: Track }) {
     try {
       const blob = await exportStatusImage(activity, track, cfg, settings.units, '3d');
       setResult({ kind: 'image', url: URL.createObjectURL(blob), blob });
-    } catch (e) { setError((e as Error).message); } finally { release(); setBusy(null); exportingRef.current = false; }
+    } catch (e) { logError('export', 'image export failed', e); setError((e as Error).message); } finally { release(); setBusy(null); exportingRef.current = false; }
   };
 
   const share = async () => {
