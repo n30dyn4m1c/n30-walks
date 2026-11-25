@@ -8,6 +8,7 @@ import { parseGpx } from '../lib/gpx';
 import { buildAndSaveActivity } from '../lib/activityBuilder';
 import { db, findDuplicateActivity } from '../db/db';
 import { pathLength } from '../lib/geo';
+import { hasVehicleStretch } from '../lib/stats';
 import type { Activity } from '../types';
 
 export function HistoryPage() {
@@ -23,8 +24,9 @@ export function HistoryPage() {
       if (g.hasTime) {
         const dup = await findDuplicateActivity(g.points[0].t, pathLength(g.coords));
         if (dup) { toast('This walk is already in your history'); nav(`/activity/${dup.id}`); return; }
-        const a = await buildAndSaveActivity(g.points, { settings, source: 'gpx', name: g.name });
-        toast('Imported walk');
+        const mode = hasVehicleStretch(g.points) ? 'mixed' : 'walk';
+        const a = await buildAndSaveActivity(g.points, { settings, source: 'gpx', name: g.name, mode });
+        toast(mode === 'mixed' ? 'Imported as a mixed journey (it includes a ride)' : 'Imported walk');
         nav(`/activity/${a.id}`);
       } else {
         // No timestamps → it's a route, not a recorded activity.

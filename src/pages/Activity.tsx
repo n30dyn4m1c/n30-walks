@@ -9,13 +9,14 @@ import { Icon } from '../components/Icon';
 import { ElevationChart } from '../components/Charts';
 import { Sheet, Stat, StylePicker, useActivities, useMapStyle, useSettings, useToast } from '../components/ui';
 import { addEndpoints, addRouteLayers, paceGradient, setHighlight } from '../lib/mapLayers';
-import { rollingPace, toLngLat } from '../lib/stats';
+import { classifyModes, rollingPace, toLngLat } from '../lib/stats';
+import { MODE_COLOR, MODE_ICON, MODE_LABEL, TRAVEL_MODES, modeGradient } from '../lib/modes';
 import { cumulativeDistances, simplifyToCount } from '../lib/geo';
 import { recordsSetBy } from '../lib/records';
 import { trackToGpx } from '../lib/gpx';
 import { enrichElevation } from '../lib/activityBuilder';
 import { saveBlob, slug } from '../media/share';
-import { distanceUnit, elevationUnit, fmtDate, fmtDistance, fmtDuration, fmtElevation, fmtNumber, fmtPace, fmtTime, paceUnit, uid } from '../lib/format';
+import { distanceUnit, elevationUnit, fmtDate, fmtDistance, fmtDuration, fmtElevation, fmtNumber, fmtPace, fmtSpeed, fmtTime, paceUnit, speedUnit, uid } from '../lib/format';
 
 export function ActivityPage() {
   const { id = '' } = useParams();
@@ -35,7 +36,13 @@ export function ActivityPage() {
   const [notes, setNotes] = useState('');
 
   const coords = useMemo(() => (track ? toLngLat(track.points) : []), [track]);
-  const gradient = useMemo(() => (track && paceColors ? paceGradient(coords, rollingPace(track.points)) : null), [track, coords, paceColors]);
+  const mixed = activity?.type === 'mixed';
+  // Mixed journeys are coloured by travel mode (walk / run / vehicle) instead of pace.
+  const modes = useMemo(() => (track && mixed ? classifyModes(track.points, track.pauses) : null), [track, mixed]);
+  const gradient = useMemo(() => {
+    if (!track || !paceColors) return null;
+    return modes ? modeGradient(coords, modes) : paceGradient(coords, rollingPace(track.points));
+  }, [track, coords, paceColors, modes]);
   const profile = useMemo(() => {
     if (!track) return null;
     const eles = track.points.map((p) => p.ele);
@@ -90,7 +97,7 @@ export function ActivityPage() {
           <div className="row between">
             <button className="icon-btn" onClick={() => nav(-1)} aria-label="Back"><Icon name="back" /></button>
             <div className="row" style={{ gap: 8 }}>
-              <button className={`map-chip ${paceColors ? 'active' : ''}`} onClick={() => setPaceColors(!paceColors)} aria-pressed={paceColors}><Icon name="flame" size={16} /> Pace</button>
+              <button className={`map-chip ${paceColors ? 'active' : ''}`} onClick={() => setPaceColors(!paceColors)} aria-pressed={paceColors}><Icon name={mixed ? 'bus' : 'flame'} size={16} /> {mixed ? 'Modes' : 'Pace'}</button>
               <button className={`map-chip ${terrain ? 'active' : ''}`} onClick={() => setTerrain(!terrain)} aria-pressed={terrain}><Icon name="cube" size={16} /> 3D</button>
             </div>
           </div>
@@ -116,9 +123,41 @@ export function ActivityPage() {
 
         <Link to={`/studio/${activity.id}`} className="btn primary lg block"><Icon name="cube" /> Play 3D flyover · Create Status</Link>
 
+        {s.journey && (() => {
+          const j = s.journey;
+          const used = TRAVEL_MODES.filter((m) => j.modes[m].distanceM > 1);
+          return (
+            <div className="card">
+              <div className="section-title" style={{ marginTop: 0, marginBottom: 10 }}>
+                <h3>Journey</h3>
+                <span className="faint small tnum">{fmtDistance(j.distanceM, u, true)} · {fmtDuration(j.movingS)} moving</span>
+              </div>
+              <div role="img" aria-label={used.map((m) => `${MODE_LABEL[m]} ${fmtDistance(j.modes[m].distanceM, u, true)}`).join(', ')}
+                style={{ display: 'flex', height: 10, borderRadius: 5, overflow: 'hidden', gap: 2 }}>
+                {used.map((m) => <div key={m} style={{ flex: j.modes[m].distanceM, background: MODE_COLOR[m] }} />)}
+              </div>
+              <div className="stack" style={{ gap: 8, marginTop: 12 }}>
+                {used.map((m) => {
+                  const t = j.modes[m];
+                  return (
+                    <div key={m} className="row between small tnum">
+                      <span className="row" style={{ gap: 8 }}><span style={{ color: MODE_COLOR[m], display: 'inline-flex' }}><Icon name={MODE_ICON[m]} size={18} /></span>{MODE_LABEL[m]}</span>
+                      <span>
+                        <strong>{fmtDistance(t.distanceM, u, true)}</strong>
+                        <span className="muted"> · {fmtDuration(t.movingS)} · {m === 'vehicle' ? `${fmtSpeed(t.movingS > 0 ? t.distanceM / t.movingS : 0, u)} ${speedUnit(u)}` : fmtPace(t.movingS > 0 ? t.movingS / (t.distanceM / 1000) : 0, u, true)}</span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="faint small" style={{ marginTop: 10 }}>Modes are detected from speed. The stats below cover the on-foot parts only.</div>
+            </div>
+          );
+        })()}
+
         <div className="card">
           <div className="stat-grid">
-            <Stat label="Distance" value={fmtDistance(s.distanceM, u)} unit={distanceUnit(u)} size="lg" />
+            <Stat label={mixed ? 'On foot' : 'Distance'} value={fmtDistance(s.distanceM, u)} unit={distanceUnit(u)} size="lg" />
             <Stat label="Moving time" value={fmtDuration(s.movingS)} size="lg" />
             <Stat label="Avg pace" value={fmtPace(s.avgPaceSPerKm, u)} unit={paceUnit(u)} size="lg" />
             <Stat label="Elev gain" value={fmtElevation(s.elevGainM, u)} unit={elevationUnit(u)} />
@@ -126,9 +165,11 @@ export function ActivityPage() {
             <Stat label="Steps (est.)" value={fmtNumber(s.estSteps)} />
             <Stat label="Max elev" value={s.maxEleM != null ? fmtElevation(s.maxEleM, u) : '—'} unit={s.maxEleM != null ? elevationUnit(u) : ''} />
             <Stat label="Calories (est.)" value={fmtNumber(s.estKcal)} unit="kcal" />
-            <Stat label="Avg speed" value={(u === 'imperial' ? s.avgSpeedMps * 2.23694 : s.avgSpeedMps * 3.6).toFixed(1)} unit={u === 'imperial' ? 'mph' : 'km/h'} />
+            <Stat label={mixed ? 'Avg speed (trip)' : 'Avg speed'} value={fmtSpeed(s.journey && s.journey.movingS > 0 ? s.journey.distanceM / s.journey.movingS : s.avgSpeedMps, u)} unit={speedUnit(u)} />
           </div>
-          {paceColors && gradient && <div className="legend" style={{ marginTop: 14 }}>Fast <span className="grad" /> Slow</div>}
+          {paceColors && gradient && (mixed
+            ? <div className="legend row" style={{ marginTop: 14, gap: 14 }}>{TRAVEL_MODES.map((m) => <span key={m} className="row" style={{ gap: 6 }}><span style={{ width: 14, height: 4, borderRadius: 2, background: MODE_COLOR[m], display: 'inline-block' }} />{MODE_LABEL[m]}</span>)}</div>
+            : <div className="legend" style={{ marginTop: 14 }}>Fast <span className="grad" /> Slow</div>)}
         </div>
 
         {profile && (

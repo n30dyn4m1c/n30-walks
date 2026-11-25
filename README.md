@@ -51,12 +51,12 @@ Types are in `src/types.ts`. Storage is in `src/db/db.ts`.
 
 | Table | Key | Contents |
 |---|---|---|
-| `activities` | `id`, indexed `startedAt` | Name, type (`walk`/`hike`), start and end times, `source` (`gps`, `simulated`, `gpx`, `demo`), **`stats`** (distance, elapsed and moving time, average pace and speed, elevation gain/loss/min/max, estimated steps and kcal, **`bestEfforts`** for 1 km / mile / 5 km / 10 km / half marathon, `splits[]`, `elevationSource`), `bbox`, an 80-point `preview` path for thumbnails, optional `routeId` and `notes` |
+| `activities` | `id`, indexed `startedAt` | Name, type (`walk`/`hike`/`mixed`), start and end times, `source` (`gps`, `simulated`, `gpx`, `demo`), **`stats`** (distance, elapsed and moving time, average pace and speed, elevation gain/loss/min/max, estimated steps and kcal, **`bestEfforts`** for 1 km / mile / 5 km / 10 km / half marathon, `splits[]`, `elevationSource`, and for mixed journeys a **`journey`** breakdown: total distance/moving time plus per-mode totals for walk, run and vehicle), `bbox`, an 80-point `preview` path for thumbnails, optional `routeId` and `notes` |
 | `tracks` | `activityId` | Full filtered `TrackPoint[]` (`lat`, `lon`, `t`, `ele`, `acc`) and manual `pauses[]` |
 | `routes` | `id`, indexed `updatedAt` | Waypoints, routed geometry, distance, elevation gain, `source` (`planned`, `discovered`, `gpx`, `activity`), and whether it was `snapped` to paths |
 | `goals` | `id` | `metric` (distance, duration, count, elevation, steps), `period` (day, week, month, year), `target` in base units |
 | `settings` | `'settings'` | Units, weight, stride, default map, GPS accuracy threshold, wake lock, and the **default `OverlayConfig`** (template, colours, map style, which stats to show, video length and quality, terrain exaggeration) |
-| `drafts` | `'draft'` | The in-progress recording. It is saved every 5 s and on every state change, so a crash or reload can be resumed. |
+| `drafts` | `'draft'` | The in-progress recording, including its tracking `mode` (`walk` or `mixed`). It is saved every 5 s and on every state change, so a crash or reload can be resumed. |
 
 **Personal records are derived, not stored.** `computeRecords()` takes the minimum or maximum over each activity's `bestEfforts` and totals. Deleting or editing a walk can therefore never leave a stale record behind. Goals, streaks and trends are derived from activity summaries the same way.
 
@@ -77,6 +77,7 @@ Types are in `src/types.ts`. Storage is in `src/db/db.ts`.
 | P1 | Follow a saved route while recording; simulate walking a saved route | ✅ |
 | P2 | GPX import (timed → activity, untimed → route) and export; JSON backup and restore; unit and weight recompute | ✅ |
 | P2 | PWA install and offline shell | ✅ |
+| P1 | **Mixed journeys** (walk → bus → walk, runs, rides): vehicle-capable GPS filter, speed-based walk/run/vehicle detection, mode-coloured map, journey breakdown; only on-foot stretches count toward pace, steps, kcal, climbing, goals and PRs | ✅ |
 | Next | Offline map tile packs; native H.264 fallback encoder; Health Connect / HealthKit step counts; audio cues; widget | ⏳ open |
 
 Open bugs, reliability work and UI/UX improvements from the code review are tracked in [`docs/REVIEW.md`](docs/REVIEW.md), with a status per item.
@@ -179,6 +180,7 @@ Use `--no-open` (for example `node scripts/mobile.mjs android --no-open`) to ski
 - **Steps and calories are estimates** from distance ÷ stride and walking MET × weight. There is no pedometer or health-platform integration.
 - **Web recording works only while the page is visible.** This is a browser restriction, mitigated with a wake lock and a warning. Pocket and screen-off tracking needs the native build.
 - Pace colouring is relative to each walk's own 10th–90th percentile pace, not to absolute thresholds.
+- **Mixed journeys are split by speed alone** (sustained over ±30 s of moving time): under 8.6 km/h is walking, up to 18 km/h running, above that a vehicle. Stretches shorter than a minute are merged into their neighbour, and stops keep the mode they happen in (waiting at a bus stop is walking; a bus at a stop is still the bus). A bus crawling in heavy traffic for minutes can read as walking, and a bike counts as a vehicle. In a mixed activity, `stats.distanceM`, `movingS`, pace, splits, best efforts, steps, kcal and elevation gain cover the on-foot stretches only; the whole trip is in `stats.journey`. The 3D flyover shows trip totals. A timed GPX import that contains a vehicle stretch is imported as a mixed journey.
 
 **Open questions and technical decisions**
 1. **H.264 availability.** All mainstream Chrome, Edge, Safari and Android WebView builds have a WebCodecs H.264 encoder. Some Linux Chromium builds don't; the app then exports VP9-in-MP4 and warns that WhatsApp may reject it. Should we add an ffmpeg.wasm or native (MediaCodec / AVFoundation) encoder fallback?

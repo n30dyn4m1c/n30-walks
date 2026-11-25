@@ -67,6 +67,15 @@ export function defaultWalkName(startMs: number): string {
   return `${part} walk`;
 }
 
+export function defaultJourneyName(startMs: number): string {
+  return defaultWalkName(startMs).replace('walk', 'journey');
+}
+
+export function fmtSpeed(mps: number, u: Units): string {
+  return (u === 'imperial' ? mps * 2.23694 : mps * 3.6).toFixed(1);
+}
+export const speedUnit = (u: Units) => (u === 'imperial' ? 'mph' : 'km/h');
+
 export function fmtNumber(n: number): string {
   return Math.round(n).toLocaleString();
 }

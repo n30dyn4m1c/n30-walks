@@ -12,7 +12,9 @@ import { recorder, useRecorder, elapsedSeconds, UNFINISHED_DRAFT_MESSAGE } from 
 import { isNative, openLocationSettings } from '../tracking/providers';
 import { buzz } from '../lib/haptics';
 import { addRouteLayers, setUserPosition, lineFeature, setData } from '../lib/mapLayers';
-import { fmtDistance, fmtDuration, fmtPace, distanceUnit, paceUnit, fmtDistance as fd, M_PER_MI } from '../lib/format';
+import { fmtDistance, fmtDuration, fmtPace, distanceUnit, paceUnit, fmtDistance as fd, fmtSpeed, speedUnit, M_PER_MI } from '../lib/format';
+import { MODE_COLOR, MODE_ICON, MODE_LABEL } from '../lib/modes';
+import type { TrackingMode } from '../types';
 import { proceduralLoop, DEMO_START } from '../lib/demo';
 import { cumulativeDistances, nearestOnPath, type LngLat } from '../lib/geo';
 
@@ -34,9 +36,12 @@ const START_ANYWAY_AFTER_MS = 8000;
 /** Hidden for longer than this while recording on the web: tell the user GPS was off. */
 const GAP_NOTICE_MS = 60_000;
 const LOCK_TIP_KEY = 'stride.lockTipSeen';
+const MODE_KEY = 'stride.trackingMode';
 
 function readFlag(key: string) { try { return localStorage.getItem(key) === '1'; } catch { return false; } }
 function writeFlag(key: string) { try { localStorage.setItem(key, '1'); } catch { /* storage blocked */ } }
+function readMode(): TrackingMode { try { return localStorage.getItem(MODE_KEY) === 'mixed' ? 'mixed' : 'walk'; } catch { return 'walk'; } }
+function writeMode(m: TrackingMode) { try { localStorage.setItem(MODE_KEY, m); } catch { /* storage blocked */ } }
 
 export function RecordPage() {
   const settings = useSettings();
@@ -59,6 +64,11 @@ export function RecordPage() {
   const [routeId, setRouteId] = useState<string | undefined>(rec.routeId ?? params.get('route') ?? undefined);
   const plannedRoute = routes?.find((r) => r.id === routeId);
   const live = rec.status === 'recording' || rec.status === 'paused';
+  // Walk only, or a mixed journey (walk, run, bus…). Remembered between sessions.
+  const [pickedMode, setPickedMode] = useState<TrackingMode>(readMode);
+  const pickMode = (m: TrackingMode) => { setPickedMode(m); writeMode(m); };
+  const mixed = live || rec.status === 'saving' ? rec.mode === 'mixed' : pickedMode === 'mixed';
+  const noun = mixed ? 'journey' : 'walk';
 
   // Warm up the real GPS as soon as the screen opens (unless already busy).
   useEffect(() => {
@@ -149,7 +159,7 @@ export function RecordPage() {
   }, [webGps]);
 
   const startWalk = async () => {
-    try { await recorder.start({ routeId }); } catch (e) { toast((e as Error).message); }
+    try { await recorder.start({ routeId, mode: pickedMode }); } catch (e) { toast((e as Error).message); }
   };
 
   const startSim = async () => {
@@ -163,17 +173,24 @@ export function RecordPage() {
     }
     setSimOpen(false);
     firstFix.current = true;
-    await recorder.acquire({ simulatePath: pathToWalk, speedup: speed, routeId });
+    // Mixed: walk to the stop, ride, walk the last bit.
+    let speedAt: ((d: number) => number) | undefined;
+    if (pickedMode === 'mixed') {
+      const total = cumulativeDistances(pathToWalk).at(-1) ?? 0;
+      const walkStart = Math.min(600, total * 0.15), walkEnd = total - Math.min(400, total * 0.1);
+      speedAt = (d) => (d < walkStart || d > walkEnd ? 1.4 : 11);
+    }
+    await recorder.acquire({ simulatePath: pathToWalk, speedup: speed, routeId, mode: pickedMode, speedAt });
     // Give the simulated "GPS" a beat to produce a fix, then start.
     setTimeout(() => { void startWalk(); }, 400);
-    toast(`Simulating a walk at ${speed}× speed`);
+    toast(`Simulating a ${pickedMode === 'mixed' ? 'walk + bus journey' : 'walk'} at ${speed}× speed`);
   };
 
   const finish = async () => {
     try {
       const id = await recorder.finish();
       if (id) nav(`/activity/${id}`, { replace: true });
-      else { toast('Walk too short to save'); recorder.acquire().catch(() => {}); }
+      else { toast(`${mixed ? 'Journey' : 'Walk'} too short to save`); recorder.acquire().catch(() => {}); }
     } catch (e) {
       // The recorder keeps the walk paused and its draft intact, so nothing is lost.
       toast(`Could not save (${(e as Error).message}). Your walk is paused and safe. Try Finish again.`);
@@ -255,10 +272,24 @@ export function RecordPage() {
               <Stat label="Time" value={fmtDuration(elapsed)} size="xl" />
               <Stat label="Distance" value={fmtDistance(rec.distanceM, u)} unit={distanceUnit(u)} size="xl" />
             </div>
-            <div className="stat-grid two" style={{ marginTop: 14, textAlign: 'center' }}>
-              <Stat label="Pace now" value={fmtPace(rec.currentPace, u)} unit={paceUnit(u)} />
-              <Stat label="Avg pace" value={fmtPace(avgPace, u)} unit={paceUnit(u)} />
-            </div>
+            {mixed ? (
+              <div className="stat-grid two" style={{ marginTop: 14, textAlign: 'center' }}>
+                <div className="stat" aria-live="polite">
+                  <div className="label">Now</div>
+                  <div className="value row" style={{ justifyContent: 'center', gap: 6, fontSize: 18, color: rec.travelMode ? MODE_COLOR[rec.travelMode] : undefined }}>
+                    {rec.travelMode ? <><Icon name={MODE_ICON[rec.travelMode]} size={20} /> {MODE_LABEL[rec.travelMode]}</> : 'Stopped'}
+                  </div>
+                </div>
+                {rec.travelMode === 'vehicle'
+                  ? <Stat label="Speed now" value={fmtSpeed(rec.currentSpeedMps, u)} unit={speedUnit(u)} />
+                  : <Stat label="Pace now" value={fmtPace(rec.currentPace, u)} unit={paceUnit(u)} />}
+              </div>
+            ) : (
+              <div className="stat-grid two" style={{ marginTop: 14, textAlign: 'center' }}>
+                <Stat label="Pace now" value={fmtPace(rec.currentPace, u)} unit={paceUnit(u)} />
+                <Stat label="Avg pace" value={fmtPace(avgPace, u)} unit={paceUnit(u)} />
+              </div>
+            )}
             <div className="sr-only" aria-live="polite">{announcement}</div>
             <div className="controls">
               {rec.status === 'recording' && (
@@ -268,9 +299,9 @@ export function RecordPage() {
                 <button className="ctrl-btn go" onClick={resume}><Icon name="play" size={26} fill /><span>Resume</span></button>
               )}
               {live && (
-                <HoldButton className="ctrl-btn stop" title="Press and hold to finish" onHold={() => setFinishOpen(true)} onTap={() => toast('Hold Finish to end the walk')}><Icon name="stop" size={22} fill /><span>Finish</span></HoldButton>
+                <HoldButton className="ctrl-btn stop" title="Press and hold to finish" onHold={() => setFinishOpen(true)} onTap={() => toast(`Hold Finish to end the ${noun}`)}><Icon name="stop" size={22} fill /><span>Finish</span></HoldButton>
               )}
-              {rec.status === 'saving' && <div className="row muted"><span className="spinner" /> Saving walk…</div>}
+              {rec.status === 'saving' && <div className="row muted"><span className="spinner" /> Saving {noun}…</div>}
             </div>
           </>
         ) : (
@@ -293,9 +324,12 @@ export function RecordPage() {
             </div>
           ) : (
           <div className="stack" style={{ alignItems: 'center', gap: 14 }}>
+            <Segmented label="What are you tracking?" value={pickedMode} onChange={pickMode}
+              options={[{ value: 'walk', label: 'Walk' }, { value: 'mixed', label: 'Mixed journey' }]} />
             <button className="start-btn" onClick={startWalk} disabled={!fix}>
-              {fix ? <><Icon name="play" size={22} fill /> Start walk</> : <><span className="spinner" /> Finding your location…</>}
+              {fix ? <><Icon name="play" size={22} fill /> Start {noun}</> : <><span className="spinner" /> Finding your location…</>}
             </button>
+            {pickedMode === 'mixed' && <div className="faint small" style={{ textAlign: 'center', maxWidth: 340 }}>Tracks the whole trip, including rides. Walking, running and vehicle stretches are detected by speed; only the on-foot parts count toward pace, steps and records.</div>}
             {fix && fix.acc > 30 && <div className="faint small" style={{ textAlign: 'center' }}>Weak signal: waiting a moment gives a cleaner start.</div>}
             {!fix && searchingLong && <button className="btn sm ghost" onClick={startWalk}>Start anyway</button>}
             <div className="row" style={{ gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -307,29 +341,29 @@ export function RecordPage() {
         )}
       </div>
 
-      <Sheet open={finishOpen} onClose={closeFinish} title="Finish this walk?">
+      <Sheet open={finishOpen} onClose={closeFinish} title={`Finish this ${noun}?`}>
         <div className="stack">
           <p className="muted small" style={{ margin: 0 }}>{fmtDistance(rec.distanceM, u)} {distanceUnit(u)} in {fmtDuration(elapsed)}</p>
-          <button className="btn primary lg block" onClick={() => { closeFinish(); finish(); }}><Icon name="check" /> Save walk</button>
-          <button className="btn lg block" onClick={closeFinish}>Keep walking</button>
+          <button className="btn primary lg block" onClick={() => { closeFinish(); finish(); }}><Icon name="check" /> Save {noun}</button>
+          <button className="btn lg block" onClick={closeFinish}>{mixed ? 'Keep going' : 'Keep walking'}</button>
           {confirmDiscard ? (
-            <button className="btn block danger" onClick={() => { closeFinish(); recorder.discard().then(() => recorder.acquire()); toast('Walk discarded'); }}><Icon name="trash" size={18} /> Tap again to delete this walk</button>
+            <button className="btn block danger" onClick={() => { closeFinish(); recorder.discard().then(() => recorder.acquire()); toast(`${mixed ? 'Journey' : 'Walk'} discarded`); }}><Icon name="trash" size={18} /> Tap again to delete this {noun}</button>
           ) : (
-            <button className="btn ghost block danger" onClick={() => setConfirmDiscard(true)}><Icon name="trash" size={18} /> Discard walk</button>
+            <button className="btn ghost block danger" onClick={() => setConfirmDiscard(true)}><Icon name="trash" size={18} /> Discard {noun}</button>
           )}
         </div>
       </Sheet>
 
-      <Sheet open={simOpen} onClose={() => setSimOpen(false)} title="Simulate a walk">
+      <Sheet open={simOpen} onClose={() => setSimOpen(false)} title={`Simulate a ${noun}`}>
         <div className="stack">
-          <p className="muted small" style={{ margin: 0 }}>Feeds realistic, noisy GPS fixes (with occasional glitches) through the real recording pipeline — perfect for testing at a desk. {plannedRoute ? `Walks your selected route “${plannedRoute.name}”.` : 'Walks a random loop from your position (or a demo location).'}</p>
+          <p className="muted small" style={{ margin: 0 }}>Feeds realistic, noisy GPS fixes (with occasional glitches) through the real recording pipeline — perfect for testing at a desk. {plannedRoute ? `Walks your selected route “${plannedRoute.name}”.` : 'Walks a random loop from your position (or a demo location).'}{pickedMode === 'mixed' ? ' Mixed mode: walks to a “bus stop”, rides at ~40 km/h, then walks the last stretch.' : ''}</p>
           {!plannedRoute && (
             <div className="field"><label>Loop distance (km)</label><input className="input" inputMode="decimal" value={simKm} onChange={(e) => setSimKm(e.target.value)} /></div>
           )}
           <div className="field"><label>Speed</label>
             <Segmented label="Simulation speed" value={simSpeed} onChange={setSimSpeed} options={[{ value: '5', label: '5×' }, { value: '10', label: '10×' }, { value: '30', label: '30×' }]} />
           </div>
-          <button className="btn primary block" onClick={startSim}>Start simulated walk</button>
+          <button className="btn primary block" onClick={startSim}>Start simulated {noun}</button>
         </div>
       </Sheet>
 

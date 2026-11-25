@@ -27,7 +27,7 @@ export function DraftCard({ draft, onResumed }: { draft: RecordingDraft; onResum
 
   return (
     <div className="card stack" role="region" aria-label="Unfinished walk">
-      <strong>Unfinished walk</strong>
+      <strong>Unfinished {draft.mode === 'mixed' ? 'journey' : 'walk'}</strong>
       <span className="muted small">
         {fmtDistance(t.distanceM, units)} {distanceUnit(units)} · {fmtDuration(Math.max(0, (last - draft.startedAt) / 1000))} · started {when}.
         {' '}It was interrupted{draft.pausedAt != null ? ' while paused' : ''}.

@@ -25,7 +25,7 @@
  *     emit a "heartbeat" at the last emitted position every 30 s so time-based
  *     stats stay continuous without adding phantom distance.
  */
-import type { TrackPoint } from '../types';
+import type { TrackingMode, TrackPoint } from '../types';
 
 export interface RawFix {
   lat: number;
@@ -44,6 +44,13 @@ export interface FilterOptions {
   maxSpeedMps: number;
   /** Process noise: std-dev of acceleration, m/s² */
   accelNoise: number;
+  /**
+   * Process noise used while the filtered speed is above `vehicleSpeedMps`
+   * (mixed journeys only). Vehicles brake and accelerate far harder than
+   * walkers; using it at walking speed would let GPS jitter through.
+   */
+  vehicleAccelNoise?: number;
+  vehicleSpeedMps?: number;
   /** Minimum emitted step, meters */
   minStepM: number;
   /** Filtered speed below which the walker is considered stationary, m/s */
@@ -67,6 +74,25 @@ export const DEFAULT_FILTER: FilterOptions = {
   gapS: 12,
   confirmFixes: 3,
 };
+
+/**
+ * Overrides for mixed journeys (walk → bus → walk, etc.). The walking preset
+ * rejects anything faster than 6 m/s as a glitch, which would throw away a
+ * bus ride as a run of glitches (followed only in jumps). Here the speed
+ * ceiling covers trains, and once the filter is moving at vehicle speed the
+ * process noise allows the hard braking and acceleration of traffic. At
+ * walking speed it behaves exactly like the walking filter, and spike
+ * rejection still works: a lone wild fix needs confirming fixes to be kept.
+ */
+export const MIXED_FILTER: Partial<FilterOptions> = {
+  maxSpeedMps: 70, // ~250 km/h
+  vehicleAccelNoise: 1.5,
+  vehicleSpeedMps: 3.5,
+};
+
+export function filterOptionsFor(mode: TrackingMode, maxAccuracyM?: number): Partial<FilterOptions> {
+  return { ...(mode === 'mixed' ? MIXED_FILTER : {}), ...(maxAccuracyM != null ? { maxAccuracyM } : {}) };
+}
 
 export type FilterResult =
   | { kind: 'accepted'; point: TrackPoint }
@@ -220,8 +246,10 @@ export class GpsFilter {
 
     // ---- 3. Kalman update ----
     const r = acc * acc;
-    this.x.predict(Math.max(0.001, dt), o.accelNoise);
-    this.y.predict(Math.max(0.001, dt), o.accelNoise);
+    const fast = o.vehicleAccelNoise != null && Math.hypot(this.x.v, this.y.v) >= (o.vehicleSpeedMps ?? 3.5);
+    const q = fast ? o.vehicleAccelNoise! : o.accelNoise;
+    this.x.predict(Math.max(0.001, dt), q);
+    this.y.predict(Math.max(0.001, dt), q);
     this.x.update(zx, r);
     this.y.update(zy, r);
     this.lastT = fix.t;

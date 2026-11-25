@@ -12,12 +12,12 @@
  *   page is hidden on most mobile browsers; native builds don't need it).
  */
 import { useSyncExternalStore } from 'react';
-import { GpsFilter, type RawFix } from '../lib/gpsFilter';
+import { GpsFilter, filterOptionsFor, type RawFix } from '../lib/gpsFilter';
 import { haversine, type LngLat } from '../lib/geo';
-import { segmentContribution, trackTotals } from '../lib/stats';
+import { liveMode, segmentContribution, trackTotals } from '../lib/stats';
 import { db, getSettings, requestPersistentStorage } from '../db/db';
 import { buildAndSaveActivity } from '../lib/activityBuilder';
-import type { ActivitySource, RecordingDraft, TrackPoint } from '../types';
+import type { ActivitySource, RecordingDraft, TrackingMode, TrackPoint, TravelMode } from '../types';
 import { createRealProvider, SimulatedProvider, type LocationProvider, type ProviderError } from './providers';
 
 export type RecorderStatus = 'idle' | 'acquiring' | 'recording' | 'paused' | 'saving';
@@ -25,6 +25,12 @@ export type RecorderStatus = 'idle' | 'acquiring' | 'recording' | 'paused' | 'sa
 export interface RecorderState {
   status: RecorderStatus;
   source: ActivitySource;
+  /** 'walk' or a 'mixed' journey (walk, run, bus…). */
+  mode: TrackingMode;
+  /** Mixed journeys: what the user seems to be doing right now (null while still). */
+  travelMode: TravelMode | null;
+  /** Speed over the last ~40 s of movement, m/s. */
+  currentSpeedMps: number;
   startedAt: number | null;
   points: TrackPoint[];
   pauses: [number, number][];
@@ -45,7 +51,7 @@ export interface RecorderState {
 }
 
 const initial: RecorderState = {
-  status: 'idle', source: 'gps', startedAt: null, points: [], pauses: [], pausedAt: null,
+  status: 'idle', source: 'gps', mode: 'walk', travelMode: null, currentSpeedMps: 0, startedAt: null, points: [], pauses: [], pausedAt: null,
   lastFix: null, distanceM: 0, movingS: 0, currentPace: 0, now: Date.now(), error: null, rejected: 0, autoPaused: false, draftError: false,
 };
 
@@ -61,6 +67,7 @@ class Recorder {
   private wakeLock: WakeLockSentinel | null = null;
   /** Bumped by every acquire/stop so a slow, superseded acquire() can't leave a GPS watcher running. */
   private generation = 0;
+  private maxAccuracyM: number | undefined;
 
   getState = () => this.state;
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => this.listeners.delete(fn); };
@@ -74,23 +81,25 @@ class Recorder {
   }
 
   /** Start the GPS (without recording) so the user sees their position & signal first. */
-  async acquire(opts: { simulatePath?: LngLat[]; speedup?: number; routeId?: string } = {}) {
+  async acquire(opts: { simulatePath?: LngLat[]; speedup?: number; routeId?: string; mode?: TrackingMode; speedAt?: (d: number) => number } = {}) {
     // Take a token BEFORE awaiting anything: any later acquire/stop supersedes this one.
     const gen = ++this.generation;
     await this.teardownProvider();
     const settings = await getSettings();
     if (gen !== this.generation) return; // superseded while loading settings
-    this.filter = new GpsFilter({ maxAccuracyM: settings.maxAccuracyM });
-    const provider = opts.simulatePath ? new SimulatedProvider(opts.simulatePath, opts.speedup ?? 10) : createRealProvider();
+    this.maxAccuracyM = settings.maxAccuracyM;
+    const mode = opts.mode ?? 'walk';
+    this.filter = new GpsFilter(filterOptionsFor(mode, settings.maxAccuracyM));
+    const provider = opts.simulatePath ? new SimulatedProvider(opts.simulatePath, opts.speedup ?? 10, undefined, opts.speedAt) : createRealProvider();
     this.provider = provider;
     if (provider instanceof SimulatedProvider) provider.holdPosition = true;
-    this.set({ ...initial, status: 'acquiring', source: opts.simulatePath ? 'simulated' : 'gps', routeId: opts.routeId, now: provider.now() });
+    this.set({ ...initial, status: 'acquiring', source: opts.simulatePath ? 'simulated' : 'gps', mode, routeId: opts.routeId, now: provider.now() });
     await provider.start(this.onFix, (error) => { if (this.provider === provider) this.set({ error }); });
     if (gen !== this.generation || this.provider !== provider) { await provider.stop(); return; }
     this.startTicker();
   }
 
-  async start(opts: { routeId?: string } = {}) {
+  async start(opts: { routeId?: string; mode?: TrackingMode } = {}) {
     if (this.state.status === 'recording' || this.state.status === 'paused' || this.state.status === 'saving') return;
     // Never overwrite an interrupted walk's draft by starting a new one.
     if (await db.drafts.get('draft')) throw new Error(UNFINISHED_DRAFT_MESSAGE);
@@ -99,8 +108,10 @@ class Recorder {
     if (!this.provider || this.state.status !== 'acquiring') return;
     const now = this.provider!.now();
     if (this.simulated) this.simulated.holdPosition = false;
-    this.filter.reset(false);
-    this.set({ status: 'recording', startedAt: now, points: [], pauses: [], distanceM: 0, movingS: 0, error: null, routeId: opts.routeId ?? this.state.routeId });
+    const mode = opts.mode ?? this.state.mode;
+    // Fresh filter tuned for the chosen mode (a walk filter would drop a bus ride as a glitch).
+    this.filter = new GpsFilter(filterOptionsFor(mode, this.maxAccuracyM));
+    this.set({ status: 'recording', mode, travelMode: null, currentSpeedMps: 0, startedAt: now, points: [], pauses: [], distanceM: 0, movingS: 0, error: null, routeId: opts.routeId ?? this.state.routeId });
     // Seed with the current fix so the walk starts exactly where the user is.
     const f = this.state.lastFix;
     if (f && now - f.t < 10_000) this.onFix({ ...f, t: now });
@@ -145,7 +156,7 @@ class Recorder {
     try {
       const settings = await getSettings();
       // The draft is deleted in the same transaction as the save — never before it.
-      const a = await buildAndSaveActivity(s.points, { settings, source: s.source, pauses, routeId: s.routeId, clearDraft: true });
+      const a = await buildAndSaveActivity(s.points, { settings, source: s.source, pauses, routeId: s.routeId, mode: s.mode, clearDraft: true });
       await this.stopProvider();
       this.set({ ...initial });
       void requestPersistentStorage();
@@ -173,7 +184,7 @@ class Recorder {
 
   /** Resume an interrupted recording from the persisted draft (real GPS only). */
   async resumeDraft(draft: RecordingDraft) {
-    await this.acquire({ routeId: draft.routeId });
+    await this.acquire({ routeId: draft.routeId, mode: draft.mode ?? 'walk' });
     const now = Date.now();
     const source = draft.source === 'simulated' ? 'gps' : draft.source;
     const base = { startedAt: draft.startedAt, points: draft.points, source, error: null };
@@ -188,7 +199,7 @@ class Recorder {
       const t = trackTotals(draft.points, pauses);
       this.set({ ...base, status: 'recording', pauses, pausedAt: null, distanceM: t.distanceM, movingS: t.movingS });
     }
-    this.set({ currentPace: this.recentPace(draft.points) });
+    this.set({ currentPace: this.recentPace(draft.points), ...this.motion(draft.points, this.state.pauses) });
     this.requestWakeLock();
     await this.saveDraft(true);
   }
@@ -199,7 +210,7 @@ class Recorder {
     const settings = await getSettings();
     const end = draft.points[draft.points.length - 1].t;
     const pauses: [number, number][] = draft.pausedAt != null ? [...draft.pauses, [draft.pausedAt, Math.max(end, draft.pausedAt)]] : draft.pauses;
-    const a = await buildAndSaveActivity(draft.points, { settings, source: draft.source, pauses, routeId: draft.routeId, clearDraft: true });
+    const a = await buildAndSaveActivity(draft.points, { settings, source: draft.source, pauses, routeId: draft.routeId, mode: draft.mode, clearDraft: true });
     void requestPersistentStorage();
     return a.id;
   }
@@ -221,7 +232,7 @@ class Recorder {
           distanceM += c.d;
           movingS += c.moving;
         }
-        Object.assign(patch, { points: pts, distanceM, movingS, currentPace: this.recentPace(pts) });
+        Object.assign(patch, { points: pts, distanceM, movingS, currentPace: this.recentPace(pts), ...this.motion(pts, s.pauses) });
       } else if (res.reason !== 'stationary') {
         patch.rejected = s.rejected + 1;
       }
@@ -229,6 +240,11 @@ class Recorder {
     this.set(patch);
     this.saveDraft();
   };
+
+  private motion(pts: TrackPoint[], pauses: [number, number][]): Pick<RecorderState, 'travelMode' | 'currentSpeedMps'> {
+    const m = liveMode(pts, pauses);
+    return { travelMode: m?.mode ?? null, currentSpeedMps: m?.speedMps ?? 0 };
+  }
 
   private recentPace(pts: TrackPoint[]): number {
     let d = 0;
@@ -248,7 +264,7 @@ class Recorder {
       // Auto-pause indicator: recording but no meaningful movement for 15 s.
       const last = s.points[s.points.length - 1];
       const autoPaused = s.status === 'recording' && !!last && now - last.t > 15_000;
-      this.set({ now, autoPaused });
+      this.set(autoPaused ? { now, autoPaused, travelMode: null, currentSpeedMps: 0 } : { now, autoPaused });
     }, 250);
   }
 
@@ -276,7 +292,7 @@ class Recorder {
     this.lastDraftSave = now;
     const draft: RecordingDraft = {
       id: 'draft', startedAt: s.startedAt ?? now, points: s.points, pauses: s.pauses, pausedAt: s.pausedAt,
-      source: s.source, routeId: s.routeId, updatedAt: now,
+      source: s.source, routeId: s.routeId, mode: s.mode, updatedAt: now,
     };
     try {
       await db.drafts.put(draft);
